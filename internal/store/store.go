@@ -14,16 +14,17 @@ import (
 	"github.com/Syluxso/gears-cli/internal/project"
 )
 
-// Open returns the cache for a project, creating it and its tables on first
-// use. Callers close it.
+// Open returns the local record for a project, creating it and its tables
+// on first use. Callers close it.
 func Open(p *project.Project) (*sql.DB, error) {
 	if err := os.MkdirAll(p.GearsDir(), 0o755); err != nil {
 		return nil, err
 	}
+	migrateLegacy(p)
 	// busy_timeout: the MCP server dispatches tool calls concurrently and each
 	// verb opens its own handle, so a writer must wait for another rather
 	// than fail with SQLITE_BUSY. WAL lets readers run during a write.
-	dsn := "file:" + filepath.ToSlash(p.CachePath()) + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
+	dsn := "file:" + filepath.ToSlash(p.LocalPath()) + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -38,11 +39,27 @@ func Open(p *project.Project) (*sql.DB, error) {
 	return db, nil
 }
 
-// Exists reports whether the cache file is present, so read-only commands
+// Exists reports whether the local record is present, so read-only commands
 // can answer "nothing yet" without creating it.
 func Exists(p *project.Project) bool {
-	_, err := os.Stat(p.CachePath())
+	migrateLegacy(p)
+	_, err := os.Stat(p.LocalPath())
 	return err == nil
+}
+
+// migrateLegacy renames a pre-rename cache.db (and its WAL sidecars) to
+// local.db once. The file was always the record; only the name was wrong.
+func migrateLegacy(p *project.Project) {
+	if _, err := os.Stat(p.LocalPath()); err == nil {
+		return
+	}
+	old := p.LegacyLocalPath()
+	if _, err := os.Stat(old); err != nil {
+		return
+	}
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		_ = os.Rename(old+suffix, p.LocalPath()+suffix)
+	}
 }
 
 // Now is the single timestamp format for the cache: RFC3339 in UTC, which

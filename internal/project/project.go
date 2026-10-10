@@ -18,8 +18,10 @@ const (
 	Dir          = ".gears"
 	BindingFile  = "project.yaml"
 	ArtifactsDir = "artifacts"
-	CacheFile    = "cache.db"
-	RunPidFile   = "run.pid"
+	LocalFile    = "local.db"
+	// legacyCacheFile is the pre-rename name; Open moves it once.
+	legacyCacheFile = "cache.db"
+	RunPidFile      = "run.pid"
 )
 
 // Project is the binding file plus the root it was found in.
@@ -30,9 +32,10 @@ type Project struct {
 	Root string `yaml:"-"`
 }
 
-func (p *Project) GearsDir() string     { return filepath.Join(p.Root, Dir) }
-func (p *Project) ArtifactsDir() string { return filepath.Join(p.GearsDir(), ArtifactsDir) }
-func (p *Project) CachePath() string    { return filepath.Join(p.GearsDir(), CacheFile) }
+func (p *Project) GearsDir() string        { return filepath.Join(p.Root, Dir) }
+func (p *Project) ArtifactsDir() string    { return filepath.Join(p.GearsDir(), ArtifactsDir) }
+func (p *Project) LocalPath() string       { return filepath.Join(p.GearsDir(), LocalFile) }
+func (p *Project) LegacyLocalPath() string { return filepath.Join(p.GearsDir(), legacyCacheFile) }
 
 // ErrNotBound is returned when no .gears/project.yaml is found walking up.
 var ErrNotBound = errors.New("no Gears project here; run: gears init")
@@ -139,7 +142,7 @@ func ensureDir(path, root string, res *InitResult) error {
 }
 
 var ignoreLines = []string{
-	Dir + "/" + CacheFile,
+	Dir + "/" + LocalFile,
 	Dir + "/" + RunPidFile,
 }
 

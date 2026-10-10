@@ -33,5 +33,5 @@ Thumbs.db
 bin/
 
 # Gears local state
-.gears/cache.db
+.gears/local.db
 .gears/run.pid
