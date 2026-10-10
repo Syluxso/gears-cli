@@ -46,8 +46,11 @@ latest session entries. Run it first in every session.`,
 				parts = append(parts, fmt.Sprintf("%s %d", s.Name, s.Count))
 			}
 			fmt.Printf("\ncards     %d open  (%s)\n", out.Cards.Open, strings.Join(parts, ", "))
+			for _, cd := range out.Cards.Mine {
+				fmt.Printf("  mine   %-8s %-6s %-2s %-12s %s\n", cd.Key, cd.Type, cd.Priority, cd.State, cd.Title)
+			}
 			for _, cd := range out.Cards.Ready {
-				fmt.Printf("  %-8s %-7s %s\n", cd.Key, cd.Type, cd.Title)
+				fmt.Printf("  ready  %-8s %-6s %-2s %-12s %s\n", cd.Key, cd.Type, cd.Priority, "", cd.Title)
 			}
 		}
 

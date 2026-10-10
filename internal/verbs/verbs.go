@@ -65,13 +65,16 @@ type StatusOut struct {
 type CardStats struct {
 	Open    int         `json:"open"`
 	ByState []CardState `json:"byState"`
-	Ready   []CardLine  `json:"ready"`
+	Mine    []CardLine  `json:"mine"`  // assigned to this agent, not completed
+	Ready   []CardLine  `json:"ready"` // in the default state, unassigned
 }
 
 type CardLine struct {
-	Key   string `json:"key"`
-	Type  string `json:"type"`
-	Title string `json:"title"`
+	Key      string `json:"key"`
+	Type     string `json:"type"`
+	State    string `json:"state,omitempty"`
+	Priority string `json:"priority"`
+	Title    string `json:"title"`
 }
 
 type ArtifactStats struct {
@@ -84,7 +87,7 @@ type ArtifactStats struct {
 func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 	out := &StatusOut{Project: c.Project.Slug, ProjectID: c.Project.ID, Root: c.Project.Root, Agent: c.agent(), Prefix: c.Project.Prefix,
 		Desk: []DeskItem{}, Runs: []RunSummary{}, Session: []SessionLine{},
-		Cards:     CardStats{ByState: []CardState{}, Ready: []CardLine{}},
+		Cards:     CardStats{ByState: []CardState{}, Mine: []CardLine{}, Ready: []CardLine{}},
 		Artifacts: ArtifactStats{ByPrefix: map[string]int{}, Problems: []string{}}}
 
 	items, err := desk.List(c.Project, desk.Filter{Agent: out.Agent})
@@ -115,17 +118,23 @@ func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 		counts := map[string]int{}
 		for _, cd := range cards {
 			counts[cd.State]++
+			if cd.Assignee == out.Agent {
+				out.Cards.Mine = append(out.Cards.Mine, CardLine{cd.Key, cd.Type, cd.State, "P" + itoa(cd.Priority), cd.Title})
+			}
 		}
 		for _, s := range sts {
 			if s.Terminal {
 				continue
 			}
-			out.Cards.ByState = append(out.Cards.ByState, CardState{Name: s.Name, Count: counts[s.Name], Default: s.Default})
+			out.Cards.ByState = append(out.Cards.ByState, CardState{Name: s.Name, Count: counts[s.Name], Default: s.Default, WIPLimit: s.WIPLimit})
 			out.Cards.Open += counts[s.Name]
 			if s.Default {
-				for _, cd := range cards {
-					if cd.State == s.Name {
-						out.Cards.Ready = append(out.Cards.Ready, CardLine{cd.Key, cd.Type, cd.Title})
+				// Highest priority first; List already orders by position.
+				for pri := 3; pri >= 0; pri-- {
+					for _, cd := range cards {
+						if cd.State == s.Name && cd.Assignee == "" && cd.Priority == pri {
+							out.Cards.Ready = append(out.Cards.Ready, CardLine{cd.Key, cd.Type, "", "P" + itoa(pri), cd.Title})
+						}
 					}
 				}
 			}
@@ -160,8 +169,10 @@ func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 		out.NextAction = "continue run " + out.Runs[0].ID[:8] + ": step " + itoa(out.Runs[0].Current.Idx) + " " + out.Runs[0].Current.Text
 	case len(out.Desk) > 0:
 		out.NextAction = "work the desk: " + len2(out.Desk) + " open item(s)"
+	case len(out.Cards.Mine) > 0:
+		out.NextAction = "continue " + out.Cards.Mine[0].Key + " " + out.Cards.Mine[0].Title + " (card_show first)"
 	case len(out.Cards.Ready) > 0:
-		out.NextAction = "pick a ready card: " + out.Cards.Ready[0].Key + " " + out.Cards.Ready[0].Title
+		out.NextAction = "pick a ready card: " + out.Cards.Ready[0].Key + " " + out.Cards.Ready[0].Title + " (card_show, then card_claim)"
 	case len(out.Session) == 0:
 		out.NextAction = "log the first session entry of the day"
 	default:

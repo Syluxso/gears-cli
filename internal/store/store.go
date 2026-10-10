@@ -36,7 +36,51 @@ func Open(p *project.Project) (*sql.DB, error) {
 			return nil, err
 		}
 	}
+	if err := addColumns(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
+}
+
+// columns added after a table first shipped. CREATE TABLE IF NOT EXISTS
+// never adds a column to an existing table, so each one is checked against
+// pragma table_info and added when missing. Append here; never edit a line.
+var columns = []struct{ table, column, def string }{
+	{"card_states", "wip_limit", "INTEGER NOT NULL DEFAULT 0"},
+	{"cards", "size", "TEXT NOT NULL DEFAULT ''"},
+	{"cards", "assignee", "TEXT NOT NULL DEFAULT ''"},
+	{"cards", "parent_id", "TEXT NOT NULL DEFAULT ''"},
+	{"cards", "due_at", "TEXT NOT NULL DEFAULT ''"},
+	{"cards", "estimate_minutes", "INTEGER NOT NULL DEFAULT 0"},
+}
+
+func addColumns(db *sql.DB) error {
+	for _, c := range columns {
+		rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, c.table)
+		if err != nil {
+			return err
+		}
+		have := false
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				rows.Close()
+				return err
+			}
+			if name == c.column {
+				have = true
+			}
+		}
+		rows.Close()
+		if have {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE ` + c.table + ` ADD COLUMN ` + c.column + ` ` + c.def); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Exists reports whether the local record is present, so read-only commands
@@ -131,14 +175,16 @@ var schema = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_desk_items_state ON desk_items(state, created_at)`,
 
-	// Cards: one board per project. States are swimlanes; the last is
+	// Cards: one board per project. States are swimlanes; one default, one
 	// terminal. Numbers never reuse (card_sequence), even across soft deletes.
+	// Tags, comments, links, checklists and events hang off a card.
 	`CREATE TABLE IF NOT EXISTS card_states (
 		id          TEXT PRIMARY KEY,
 		name        TEXT NOT NULL UNIQUE,
 		position    INTEGER NOT NULL,
 		is_default  INTEGER NOT NULL DEFAULT 0,
 		is_terminal INTEGER NOT NULL DEFAULT 0,
+		wip_limit   INTEGER NOT NULL DEFAULT 0,
 		created_at  TEXT NOT NULL,
 		updated_at  TEXT NOT NULL
 	)`,
@@ -147,25 +193,82 @@ var schema = []string{
 		last_number INTEGER NOT NULL DEFAULT 0
 	)`,
 	`CREATE TABLE IF NOT EXISTS cards (
-		id           TEXT PRIMARY KEY,
-		number       INTEGER NOT NULL UNIQUE,
-		key          TEXT NOT NULL UNIQUE,
-		title        TEXT NOT NULL,
-		body         TEXT NOT NULL DEFAULT '',
-		type         TEXT NOT NULL DEFAULT 'story',
-		state_id     TEXT NOT NULL REFERENCES card_states(id),
-		priority     INTEGER NOT NULL DEFAULT 0,
-		position     INTEGER NOT NULL DEFAULT 0,
-		card_data    TEXT NOT NULL DEFAULT '{}',
-		artifact     TEXT NOT NULL DEFAULT '',
-		external_key TEXT NOT NULL DEFAULT '',
-		created_by   TEXT NOT NULL,
-		created_at   TEXT NOT NULL,
-		updated_at   TEXT NOT NULL,
-		completed_at TEXT NOT NULL DEFAULT '',
-		deleted_at   TEXT NOT NULL DEFAULT ''
+		id               TEXT PRIMARY KEY,
+		number           INTEGER NOT NULL UNIQUE,
+		key              TEXT NOT NULL UNIQUE,
+		title            TEXT NOT NULL,
+		body             TEXT NOT NULL DEFAULT '',
+		type             TEXT NOT NULL DEFAULT 'story',
+		state_id         TEXT NOT NULL REFERENCES card_states(id),
+		size             TEXT NOT NULL DEFAULT '',
+		priority         INTEGER NOT NULL DEFAULT 0,
+		position         INTEGER NOT NULL DEFAULT 0,
+		card_data        TEXT NOT NULL DEFAULT '{}',
+		assignee         TEXT NOT NULL DEFAULT '',
+		parent_id        TEXT NOT NULL DEFAULT '',
+		due_at           TEXT NOT NULL DEFAULT '',
+		estimate_minutes INTEGER NOT NULL DEFAULT 0,
+		artifact         TEXT NOT NULL DEFAULT '',
+		external_key     TEXT NOT NULL DEFAULT '',
+		created_by       TEXT NOT NULL,
+		created_at       TEXT NOT NULL,
+		updated_at       TEXT NOT NULL,
+		completed_at     TEXT NOT NULL DEFAULT '',
+		deleted_at       TEXT NOT NULL DEFAULT ''
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_cards_state ON cards(state_id, position, number)`,
+	`CREATE TABLE IF NOT EXISTS card_tags (
+		card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+		tag     TEXT NOT NULL,
+		PRIMARY KEY (card_id, tag)
+	)`,
+	`CREATE TABLE IF NOT EXISTS card_comments (
+		id         TEXT PRIMARY KEY,
+		card_id    TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+		body       TEXT NOT NULL,
+		agent      TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		deleted_at TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_card_comments_card ON card_comments(card_id, created_at)`,
+	`CREATE TABLE IF NOT EXISTS card_links (
+		id             TEXT PRIMARY KEY,
+		card_id        TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+		kind           TEXT NOT NULL,
+		target_card_id TEXT NOT NULL DEFAULT '',
+		url            TEXT NOT NULL DEFAULT '',
+		title          TEXT NOT NULL DEFAULT '',
+		agent          TEXT NOT NULL,
+		created_at     TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_card_links_target ON card_links(target_card_id)`,
+	`CREATE TABLE IF NOT EXISTS card_checklists (
+		id         TEXT PRIMARY KEY,
+		card_id    TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+		title      TEXT NOT NULL,
+		position   INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL
+	)`,
+	`CREATE TABLE IF NOT EXISTS card_checklist_items (
+		id           TEXT PRIMARY KEY,
+		checklist_id TEXT NOT NULL REFERENCES card_checklists(id) ON DELETE CASCADE,
+		title        TEXT NOT NULL,
+		done         INTEGER NOT NULL DEFAULT 0,
+		position     INTEGER NOT NULL DEFAULT 0,
+		done_at      TEXT NOT NULL DEFAULT '',
+		done_by      TEXT NOT NULL DEFAULT '',
+		created_at   TEXT NOT NULL
+	)`,
+	`CREATE TABLE IF NOT EXISTS card_events (
+		id      INTEGER PRIMARY KEY,
+		card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+		at      TEXT NOT NULL,
+		agent   TEXT NOT NULL,
+		kind    TEXT NOT NULL,
+		detail  TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_card_events_card ON card_events(card_id, at)`,
 
 	// Runs: one instance of a runbook. Steps are copied in at start so a
 	// later edit to the runbook does not rewrite history.
