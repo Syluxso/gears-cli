@@ -1,0 +1,134 @@
+// Package store opens the project's local SQLite cache and owns its schema.
+// Every table here mirrors what the API record will hold, so rows written
+// offline sync up unchanged once there is somewhere to send them.
+package store
+
+import (
+	"database/sql"
+	"os"
+	"time"
+
+	_ "modernc.org/sqlite"
+
+	"github.com/Syluxso/gears/internal/project"
+)
+
+// Open returns the cache for a project, creating it and its tables on first
+// use. Callers close it.
+func Open(p *project.Project) (*sql.DB, error) {
+	if err := os.MkdirAll(p.GearsDir(), 0o755); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", p.CachePath())
+	if err != nil {
+		return nil, err
+	}
+	// One local writer at a time is fine; WAL lets status read while a
+	// command writes.
+	for _, s := range schema {
+		if _, err := db.Exec(s); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+	return db, nil
+}
+
+// Exists reports whether the cache file is present, so read-only commands
+// can answer "nothing yet" without creating it.
+func Exists(p *project.Project) bool {
+	_, err := os.Stat(p.CachePath())
+	return err == nil
+}
+
+// Now is the single timestamp format for the cache: RFC3339 in UTC, which
+// sorts as text.
+func Now() string { return time.Now().UTC().Truncate(time.Second).Format(time.RFC3339) }
+
+// Parse turns a stored timestamp back into local time.
+func Parse(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t.Local()
+}
+
+var schema = []string{
+	`PRAGMA journal_mode = WAL`,
+	`PRAGMA foreign_keys = ON`,
+
+	// Sessions: one timeline per project, entries from every agent.
+	`CREATE TABLE IF NOT EXISTS session_entries (
+		id    INTEGER PRIMARY KEY,
+		at    TEXT NOT NULL,
+		agent TEXT NOT NULL,
+		kind  TEXT NOT NULL,
+		text  TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_session_entries_at ON session_entries(at)`,
+
+	// Artifacts: the row is the rule, the file is the data.
+	`CREATE TABLE IF NOT EXISTS artifacts (
+		id           TEXT PRIMARY KEY,
+		prefix       TEXT NOT NULL,
+		slug         TEXT NOT NULL,
+		file         TEXT NOT NULL UNIQUE,
+		title        TEXT NOT NULL DEFAULT '',
+		status       TEXT NOT NULL DEFAULT '',
+		created_at   TEXT NOT NULL,
+		created_by   TEXT NOT NULL,
+		updated_at   TEXT NOT NULL,
+		body_hash    TEXT NOT NULL DEFAULT '',
+		file_present INTEGER NOT NULL DEFAULT 1,
+		shape_ok     INTEGER NOT NULL DEFAULT 1,
+		shape_errors TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE TABLE IF NOT EXISTS artifact_tags (
+		artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+		tag         TEXT NOT NULL,
+		PRIMARY KEY (artifact_id, tag)
+	)`,
+
+	// Desk: type is lifecycle. state is open or closed; how it closes depends
+	// on type (read, answered, done, dismissed). handoff never closes.
+	`CREATE TABLE IF NOT EXISTS desk_items (
+		id         TEXT PRIMARY KEY,
+		type       TEXT NOT NULL,
+		from_agent TEXT NOT NULL,
+		to_agent   TEXT NOT NULL DEFAULT '',
+		text       TEXT NOT NULL,
+		ref        TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		state      TEXT NOT NULL DEFAULT 'open',
+		closed_at  TEXT NOT NULL DEFAULT '',
+		closed_by  TEXT NOT NULL DEFAULT '',
+		answer     TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_desk_items_state ON desk_items(state, created_at)`,
+
+	// Runs: one instance of a runbook. Steps are copied in at start so a
+	// later edit to the runbook does not rewrite history.
+	`CREATE TABLE IF NOT EXISTS runs (
+		id         TEXT PRIMARY KEY,
+		runbook    TEXT NOT NULL,
+		target     TEXT NOT NULL DEFAULT '',
+		agent      TEXT NOT NULL,
+		started_at TEXT NOT NULL,
+		ended_at   TEXT NOT NULL DEFAULT '',
+		status     TEXT NOT NULL DEFAULT 'active'
+	)`,
+	`CREATE TABLE IF NOT EXISTS run_steps (
+		run_id   TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+		idx      INTEGER NOT NULL,
+		kind     TEXT NOT NULL,
+		text     TEXT NOT NULL,
+		"check"  TEXT NOT NULL DEFAULT '',
+		state    TEXT NOT NULL DEFAULT 'pending',
+		evidence TEXT NOT NULL DEFAULT '',
+		done_at  TEXT NOT NULL DEFAULT '',
+		reason   TEXT NOT NULL DEFAULT '',
+		desk_item TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (run_id, idx)
+	)`,
+}

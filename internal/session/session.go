@@ -5,15 +5,13 @@
 package session
 
 import (
-	"database/sql"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/Syluxso/gears/internal/project"
+	"github.com/Syluxso/gears/internal/store"
 )
 
 // Kinds an entry may have. The kind is the whole taxonomy; there is no
@@ -27,36 +25,6 @@ type Entry struct {
 	Agent string
 	Kind  string
 	Text  string
-}
-
-func open(p *project.Project) (*sql.DB, error) {
-	if err := os.MkdirAll(p.GearsDir(), 0o755); err != nil {
-		return nil, err
-	}
-	db, err := sql.Open("sqlite", p.CachePath())
-	if err != nil {
-		return nil, err
-	}
-	// One writer at a time is fine for a local cache; WAL lets a reader
-	// (gears status) run while a writer (gears session new) is mid-commit.
-	stmts := []string{
-		`PRAGMA journal_mode = WAL`,
-		`CREATE TABLE IF NOT EXISTS session_entries (
-			id    INTEGER PRIMARY KEY,
-			at    TEXT NOT NULL,
-			agent TEXT NOT NULL,
-			kind  TEXT NOT NULL,
-			text  TEXT NOT NULL
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_session_entries_at ON session_entries(at)`,
-	}
-	for _, s := range stmts {
-		if _, err := db.Exec(s); err != nil {
-			db.Close()
-			return nil, err
-		}
-	}
-	return db, nil
 }
 
 // DefaultAgent is the label used when none is given: $GEARS_AGENT, else
@@ -81,23 +49,38 @@ func Append(p *project.Project, kind, agent, text string) (*Entry, error) {
 	if agent == "" {
 		agent = DefaultAgent()
 	}
-	db, err := open(p)
+	db, err := store.Open(p)
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
 
-	e := &Entry{At: time.Now().UTC().Truncate(time.Second), Agent: agent, Kind: kind, Text: text}
+	at := store.Now()
 	res, err := db.Exec(
 		`INSERT INTO session_entries (at, agent, kind, text) VALUES (?, ?, ?, ?)`,
-		e.At.Format(time.RFC3339), e.Agent, e.Kind, e.Text,
+		at, agent, kind, text,
 	)
 	if err != nil {
 		return nil, err
 	}
-	e.ID, _ = res.LastInsertId()
-	e.At = e.At.Local()
-	return e, nil
+	id, _ := res.LastInsertId()
+	return &Entry{ID: id, At: store.Parse(at), Agent: agent, Kind: kind, Text: text}, nil
+}
+
+// Exists reports whether an entry id is in the log. Runs use it to verify
+// "log a session entry" evidence.
+func Exists(p *project.Project, id int64) bool {
+	if !store.Exists(p) {
+		return false
+	}
+	db, err := store.Open(p)
+	if err != nil {
+		return false
+	}
+	defer db.Close()
+	var n int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM session_entries WHERE id = ?`, id).Scan(&n)
+	return n == 1
 }
 
 // Today returns today's entries (local calendar day), oldest first.
@@ -118,10 +101,10 @@ func Recent(p *project.Project, days int) ([]Entry, error) {
 }
 
 func since(p *project.Project, start time.Time) ([]Entry, error) {
-	if _, err := os.Stat(p.CachePath()); err != nil {
-		return nil, nil // no cache yet means no entries, not an error
+	if !store.Exists(p) {
+		return nil, nil
 	}
-	db, err := open(p)
+	db, err := store.Open(p)
 	if err != nil {
 		return nil, err
 	}
@@ -143,11 +126,7 @@ func since(p *project.Project, start time.Time) ([]Entry, error) {
 		if err := rows.Scan(&e.ID, &at, &e.Agent, &e.Kind, &e.Text); err != nil {
 			return nil, err
 		}
-		t, err := time.Parse(time.RFC3339, at)
-		if err != nil {
-			return nil, err
-		}
-		e.At = t.Local()
+		e.At = store.Parse(at)
 		out = append(out, e)
 	}
 	return out, rows.Err()

@@ -11,18 +11,26 @@ import (
 	"github.com/Syluxso/gears/internal/shape"
 )
 
+var (
+	artifactAgent string
+	artifactTag   string
+)
+
 var artifactCmd = &cobra.Command{
 	Use:   "artifact",
 	Short: "Shaped files beside the code: adr, story, idea, index, free",
+	Long: `Artifacts are prefixed files in .gears/artifacts/ ruled by a row in the
+local cache. The row is created first and holds identity, tags, hash and
+shape result; the file holds the body. The two are reconciled on every
+list and status.`,
 }
 
 var artifactNewCmd = &cobra.Command{
 	Use:   "new <prefix> <title>",
 	Short: "Create an artifact from its shape",
-	Long: `Create a new artifact file in .gears/artifacts/ from the shape for its
-prefix. The file is named <prefix>--<slug>.md and seeded with the required
-front matter and section headings, so an agent fills blanks instead of
-inventing structure.
+	Long: `Create a new artifact: the row first, then the file seeded with the
+required front matter and section headings, so an agent fills blanks
+instead of inventing structure.
 
   gears artifact new adr "Clean Gin build on byz-platform"
   gears artifact new story "Desk handoff"`,
@@ -32,19 +40,18 @@ inventing structure.
 		if err != nil {
 			return err
 		}
-		title := strings.Join(args[1:], " ")
-		a, err := artifact.New(p, args[0], title)
+		a, err := artifact.New(p, args[0], strings.Join(args[1:], " "), artifactAgent)
 		if err != nil {
 			return err
 		}
-		fmt.Println(a.Path)
+		fmt.Printf("%s  %s\n", a.ID[:8], a.Path)
 		return nil
 	},
 }
 
 var artifactListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List artifacts with their shape status",
+	Short: "List artifacts with tags and shape status",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		p, err := project.Find(mustCwd())
@@ -55,16 +62,75 @@ var artifactListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if len(list) == 0 {
+		n := 0
+		for _, a := range list {
+			if artifactTag != "" && !has(a.Tags, project.Slugify(artifactTag)) {
+				continue
+			}
+			n++
+			mark := "ok"
+			if !a.FilePresent {
+				mark = "!! file missing"
+			} else if !a.ShapeOK {
+				mark = "!! " + strings.Join(a.ShapeErrors, "; ")
+			}
+			tags := ""
+			if len(a.Tags) > 0 {
+				tags = " #" + strings.Join(a.Tags, " #")
+			}
+			fmt.Printf("%s  %-7s %-48s %s%s\n", a.ID[:8], a.Prefix, a.File, mark, tags)
+		}
+		if n == 0 {
 			fmt.Println("no artifacts. create one: gears artifact new adr \"...\"")
+		}
+		return nil
+	},
+}
+
+var artifactTagCmd = &cobra.Command{
+	Use:   "tag <file|id> <+tag|-tag>...",
+	Short: "Add or remove tags on an artifact",
+	Long: `Tags live on the row, never in the file.
+
+  gears artifact tag adr--001-clean-gin-build.md auth api
+  gears artifact tag 3f2a9c1 -api`,
+	Args: cobra.MinimumNArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		p, err := project.Find(mustCwd())
+		if err != nil {
+			return err
+		}
+		a, err := artifact.Tag(p, args[0], args[1:])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s  #%s\n", a.File, strings.Join(a.Tags, " #"))
+		return nil
+	},
+}
+
+var artifactReconcileCmd = &cobra.Command{
+	Use:   "reconcile",
+	Short: "Make rows and files agree",
+	Long: `Regenerate files that have a row but no file, adopt files that have no
+row, and update rows whose file changed. Runs automatically on list and
+status; call it directly to see what it did.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		p, err := project.Find(mustCwd())
+		if err != nil {
+			return err
+		}
+		changes, err := artifact.Reconcile(p)
+		if err != nil {
+			return err
+		}
+		if len(changes) == 0 {
+			fmt.Println("rows and files agree")
 			return nil
 		}
-		for _, a := range list {
-			mark := "ok"
-			if errs := artifact.Validate(p, a); len(errs) > 0 {
-				mark = "!! " + strings.Join(errs, "; ")
-			}
-			fmt.Printf("%-7s %-48s %s\n", a.Prefix, a.File, mark)
+		for _, c := range changes {
+			fmt.Printf("%-11s %-48s %s\n", c.Action, c.File, c.Detail)
 		}
 		return nil
 	},
@@ -142,6 +208,17 @@ var artifactShapesCmd = &cobra.Command{
 }
 
 func init() {
-	artifactCmd.AddCommand(artifactNewCmd, artifactListCmd, artifactValidateCmd, artifactShapesCmd)
+	artifactNewCmd.Flags().StringVarP(&artifactAgent, "agent", "a", "", "agent label recorded as creator (default: $GEARS_AGENT or \"local\")")
+	artifactListCmd.Flags().StringVar(&artifactTag, "tag", "", "only artifacts with this tag")
+	artifactCmd.AddCommand(artifactNewCmd, artifactListCmd, artifactTagCmd, artifactReconcileCmd, artifactValidateCmd, artifactShapesCmd)
 	root.AddCommand(artifactCmd)
+}
+
+func has(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }

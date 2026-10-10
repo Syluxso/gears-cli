@@ -3,6 +3,7 @@ module github.com/Syluxso/gears
 go 1.26
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/spf13/cobra v1.10.1
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.39.0
@@ -10,7 +11,6 @@ require (
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
