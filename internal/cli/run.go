@@ -8,10 +8,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Syluxso/gears/internal/mcpserver"
-	"github.com/Syluxso/gears/internal/project"
-	"github.com/Syluxso/gears/internal/session"
-	"github.com/Syluxso/gears/internal/verbs"
+	"github.com/Syluxso/gears-cli/internal/mcpserver"
+	"github.com/Syluxso/gears-cli/internal/project"
+	"github.com/Syluxso/gears-cli/internal/session"
+	"github.com/Syluxso/gears-cli/internal/verbs"
 )
 
 var runDir string

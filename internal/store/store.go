@@ -11,7 +11,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/Syluxso/gears/internal/project"
+	"github.com/Syluxso/gears-cli/internal/project"
 )
 
 // Open returns the cache for a project, creating it and its tables on first

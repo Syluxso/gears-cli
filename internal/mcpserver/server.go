@@ -10,7 +10,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/Syluxso/gears/internal/verbs"
+	"github.com/Syluxso/gears-cli/internal/verbs"
 )
 
 // New builds a server bound to one project and acting agent.

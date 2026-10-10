@@ -1,4 +1,4 @@
-module github.com/Syluxso/gears
+module github.com/Syluxso/gears-cli
 
 go 1.26
 

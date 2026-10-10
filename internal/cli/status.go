@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Syluxso/gears/internal/artifact"
-	"github.com/Syluxso/gears/internal/verbs"
+	"github.com/Syluxso/gears-cli/internal/artifact"
+	"github.com/Syluxso/gears-cli/internal/verbs"
 )
 
 var statusCmd = &cobra.Command{

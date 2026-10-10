@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Syluxso/gears/internal/artifact"
-	"github.com/Syluxso/gears/internal/desk"
-	"github.com/Syluxso/gears/internal/project"
-	"github.com/Syluxso/gears/internal/runbook"
-	"github.com/Syluxso/gears/internal/session"
-	"github.com/Syluxso/gears/internal/shape"
+	"github.com/Syluxso/gears-cli/internal/artifact"
+	"github.com/Syluxso/gears-cli/internal/desk"
+	"github.com/Syluxso/gears-cli/internal/project"
+	"github.com/Syluxso/gears-cli/internal/runbook"
+	"github.com/Syluxso/gears-cli/internal/session"
+	"github.com/Syluxso/gears-cli/internal/shape"
 )
 
 // Ctx is what every verb needs: the bound project and the acting agent.

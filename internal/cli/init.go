@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Syluxso/gears/internal/project"
+	"github.com/Syluxso/gears-cli/internal/project"
 )
 
 var initSlug string

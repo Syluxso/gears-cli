@@ -11,9 +11,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/Syluxso/gears/internal/project"
-	"github.com/Syluxso/gears/internal/session"
-	"github.com/Syluxso/gears/internal/store"
+	"github.com/Syluxso/gears-cli/internal/project"
+	"github.com/Syluxso/gears-cli/internal/session"
+	"github.com/Syluxso/gears-cli/internal/store"
 )
 
 // Types and how each one closes.

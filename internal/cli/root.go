@@ -10,9 +10,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Syluxso/gears/internal/project"
-	"github.com/Syluxso/gears/internal/session"
-	"github.com/Syluxso/gears/internal/verbs"
+	"github.com/Syluxso/gears-cli/internal/project"
+	"github.com/Syluxso/gears-cli/internal/session"
+	"github.com/Syluxso/gears-cli/internal/verbs"
 )
 
 // Version is set by the build (-ldflags "-X .../cli.Version=v3.0.0").

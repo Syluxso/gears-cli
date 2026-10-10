@@ -1,6 +1,8 @@
-# gears
+# gears-cli
 
-v3 rebuild of the gears CLI. Ground-up rewrite; nothing from v2 is carried over.
+The Gears CLI: the local door to a Gears project. Binds a directory to a project, keeps shaped artifacts beside the code, runs the desk and session log, drives runbooks, and serves every verb as an MCP tool over stdio (`gears run`).
+
+Binary name is `gears`. Module `github.com/Syluxso/gears-cli`.
 
 Sibling repos:
 
@@ -8,4 +10,4 @@ Sibling repos:
 - [gears-app](https://github.com/Syluxso/gears-app) — post-auth Angular app
 - [gears-front](https://github.com/Syluxso/gears-front) — pre-auth Next.js site
 
-The v2 code remains on the `master` branch.
+Earlier generations of Gears live in `Syluxso/gears`; nothing from them is carried over.

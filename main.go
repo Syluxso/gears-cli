@@ -6,7 +6,7 @@ package main
 import (
 	"os"
 
-	"github.com/Syluxso/gears/internal/cli"
+	"github.com/Syluxso/gears-cli/internal/cli"
 )
 
 func main() {

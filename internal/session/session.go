@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Syluxso/gears/internal/project"
-	"github.com/Syluxso/gears/internal/store"
+	"github.com/Syluxso/gears-cli/internal/project"
+	"github.com/Syluxso/gears-cli/internal/store"
 )
 
 // Kinds an entry may have. The kind is the whole taxonomy; there is no

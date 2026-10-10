@@ -15,11 +15,11 @@ import (
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 
-	"github.com/Syluxso/gears/internal/desk"
-	"github.com/Syluxso/gears/internal/gitx"
-	"github.com/Syluxso/gears/internal/project"
-	"github.com/Syluxso/gears/internal/session"
-	"github.com/Syluxso/gears/internal/store"
+	"github.com/Syluxso/gears-cli/internal/desk"
+	"github.com/Syluxso/gears-cli/internal/gitx"
+	"github.com/Syluxso/gears-cli/internal/project"
+	"github.com/Syluxso/gears-cli/internal/session"
+	"github.com/Syluxso/gears-cli/internal/store"
 )
 
 // Kinds is the whole step vocabulary.
