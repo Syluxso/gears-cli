@@ -6,8 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Syluxso/gears/internal/project"
-	"github.com/Syluxso/gears/internal/runbook"
+	"github.com/Syluxso/gears/internal/verbs"
 )
 
 var (
@@ -15,7 +14,6 @@ var (
 	rbCheck  string
 	rbTarget string
 	rbRun    string
-	rbAgent  string
 	rbReason string
 )
 
@@ -41,15 +39,18 @@ var runbookNewCmd = &cobra.Command{
 	Short: "Create an empty runbook",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
+		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		rb, err := runbook.New(p, strings.Join(args, " "))
+		out, err := verbs.RunbookNew(c, verbs.RunbookNewIn{Title: strings.Join(args, " ")})
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%s\nadd steps: gears runbook step add %s --kind ask \"...\"\n", rb.Path, rb.Slug)
+		if emit(out) {
+			return nil
+		}
+		fmt.Printf("%s\nadd steps: gears runbook step add %s --kind ask \"...\"\n", out.Path, out.Slug)
 		return nil
 	},
 }
@@ -64,18 +65,18 @@ var runbookStepAddCmd = &cobra.Command{
   gears runbook step add single-ticket --kind gears --check session "Log a session entry"`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
+		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		rb, err := runbook.Load(p, args[0])
+		out, err := verbs.RunbookStepAdd(c, verbs.RunbookStepAddIn{Runbook: args[0], Kind: rbKind, Text: strings.Join(args[1:], " "), Check: rbCheck})
 		if err != nil {
 			return err
 		}
-		if err := rb.AddStep(rbKind, strings.Join(args[1:], " "), rbCheck); err != nil {
-			return err
+		if emit(out) {
+			return nil
 		}
-		fmt.Printf("%s: %d step%s\n", rb.Slug, len(rb.Steps), plural(len(rb.Steps), "", "s"))
+		fmt.Printf("%s: %d step%s\n", out.Slug, len(out.Steps), plural(len(out.Steps), "", "s"))
 		return nil
 	},
 }
@@ -85,50 +86,65 @@ var runbookListCmd = &cobra.Command{
 	Short: "Runbooks in this project, and active runs",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
+		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		books, err := runbook.All(p)
+		out, err := verbs.RunbookList(c, verbs.RunbookListIn{})
 		if err != nil {
 			return err
 		}
-		if len(books) == 0 {
+		if emit(out) {
+			return nil
+		}
+		if len(out.Runbooks) == 0 {
 			fmt.Println("no runbooks. create one: gears runbook new \"Single ticket development\"")
 		}
-		for _, rb := range books {
+		for _, rb := range out.Runbooks {
 			fmt.Printf("%-32s %-40s %d step%s\n", rb.Slug, rb.Title, len(rb.Steps), plural(len(rb.Steps), "", "s"))
 		}
-		runs, err := runbook.Active(p)
-		if err != nil {
-			return err
-		}
-		if len(runs) > 0 {
+		if len(out.Active) > 0 {
 			fmt.Println("\nactive runs")
-			for _, r := range runs {
-				printRunLine(r)
+			for _, r := range out.Active {
+				printRunSummary(r)
 			}
 		}
 		return nil
 	},
 }
 
-func printRunLine(r runbook.Run) {
-	done := 0
-	for _, s := range r.Steps {
-		if s.State != "pending" && s.State != "current" {
-			done++
-		}
-	}
+func printRunSummary(r verbs.RunSummary) {
 	cur := "—"
-	if s := r.Current(); s != nil {
-		cur = fmt.Sprintf("step %d: %s", s.Idx, s.Text)
+	if r.Current != nil {
+		cur = fmt.Sprintf("step %d: %s", r.Current.Idx, r.Current.Text)
 	}
 	target := r.Target
 	if target != "" {
 		target = " " + target
 	}
-	fmt.Printf("%s  %s%s  %s  %d/%d  %s\n", r.Short(), r.Runbook, target, r.Agent, done, len(r.Steps), cur)
+	fmt.Printf("%s  %s%s  %s  %d/%d  %s\n", short(r.ID), r.Runbook, target, r.Agent, r.Done, r.Total, cur)
+}
+
+func printRun(r *verbs.Run) {
+	fmt.Printf("run %s  %s", short(r.ID), r.Runbook)
+	if r.Target != "" {
+		fmt.Printf("  target %s", r.Target)
+	}
+	fmt.Printf("  agent %s  %s\n", r.Agent, r.Status)
+	marks := map[string]string{"pending": "·", "current": "▶", "done": "✓", "verified": "✓✓", "skipped": "↷"}
+	for _, s := range r.Steps {
+		line := fmt.Sprintf("  %-2s %02d  %-6s %s", marks[s.State], s.Idx, s.Kind, s.Text)
+		if s.Evidence != "" {
+			line += "  [" + s.Evidence + "]"
+		}
+		if s.Reason != "" {
+			line += "  (" + s.Reason + ")"
+		}
+		if s.DoneAt != "" {
+			line += "  " + hhmm(s.DoneAt)
+		}
+		fmt.Println(line)
+	}
 }
 
 var runbookShowCmd = &cobra.Command{
@@ -136,50 +152,31 @@ var runbookShowCmd = &cobra.Command{
 	Short: "Show a runbook's steps, or a run's progress",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
+		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		if r, err := runbook.Get(p, args[0]); err == nil {
-			printRun(r)
+		out, err := verbs.RunbookShow(c, verbs.RunbookShowIn{Key: args[0]})
+		if err != nil {
+			return err
+		}
+		if emit(out) {
 			return nil
 		}
-		rb, err := runbook.Load(p, args[0])
-		if err != nil {
-			return err
+		if out.Run != nil {
+			printRun(out.Run)
+			return nil
 		}
-		fmt.Printf("%s  (%s)\n", rb.Title, rb.Slug)
-		for i, s := range rb.Steps {
+		fmt.Printf("%s  (%s)\n", out.Runbook.Title, out.Runbook.Slug)
+		for _, s := range out.Runbook.Steps {
 			check := ""
 			if s.Check != "" {
 				check = "  evidence: " + s.Check
 			}
-			fmt.Printf("  %02d  %-6s %s%s\n", i+1, s.Kind, s.Text, check)
+			fmt.Printf("  %02d  %-6s %s%s\n", s.Idx, s.Kind, s.Text, check)
 		}
 		return nil
 	},
-}
-
-func printRun(r *runbook.Run) {
-	fmt.Printf("run %s  %s", r.Short(), r.Runbook)
-	if r.Target != "" {
-		fmt.Printf("  target %s", r.Target)
-	}
-	fmt.Printf("  agent %s  %s\n", r.Agent, r.Status)
-	for _, s := range r.Steps {
-		mark := map[string]string{"pending": "·", "current": "▶", "done": "✓", "verified": "✓✓", "skipped": "↷"}[s.State]
-		line := fmt.Sprintf("  %-2s %02d  %-6s %s", mark, s.Idx, s.Kind, s.Text)
-		if s.Evidence != "" {
-			line += "  [" + s.Evidence + "]"
-		}
-		if s.Reason != "" {
-			line += "  (" + s.Reason + ")"
-		}
-		if !s.DoneAt.IsZero() {
-			line += "  " + s.DoneAt.Format("15:04")
-		}
-		fmt.Println(line)
-	}
 }
 
 var runbookStartCmd = &cobra.Command{
@@ -187,24 +184,37 @@ var runbookStartCmd = &cobra.Command{
 	Short: "Start a run; its first step lands on the desk",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
+		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		r, err := runbook.Start(p, args[0], rbTarget, rbAgent)
+		out, err := verbs.RunbookStart(c, verbs.RunbookStartIn{Runbook: args[0], Target: rbTarget})
 		if err != nil {
 			return err
 		}
-		printRun(r)
+		if emit(out) {
+			return nil
+		}
+		printRun(out)
 		return nil
 	},
 }
 
-func resolveRun(p *project.Project) (*runbook.Run, error) {
-	if rbRun != "" {
-		return runbook.Get(p, rbRun)
+func printStepOut(out *verbs.RunStepOut) {
+	state := "done"
+	if out.Verified {
+		state = "verified"
 	}
-	return runbook.Only(p)
+	if out.Step.State == "skipped" {
+		fmt.Printf("step %d skipped: %s\n", out.Step.Idx, out.Step.Reason)
+	} else {
+		fmt.Printf("step %d %s (%s)\n", out.Step.Idx, state, out.Note)
+	}
+	if out.Finished {
+		fmt.Printf("run %s completed\n", short(out.RunID))
+	} else if out.Next != nil {
+		fmt.Printf("next: step %d  %-6s %s\n", out.Next.Idx, out.Next.Kind, out.Next.Text)
+	}
 }
 
 var runbookStepDoneCmd = &cobra.Command{
@@ -215,31 +225,18 @@ a session entry id, a desk item id, an artifact file, or a note for steps
 without a check. Verification failure leaves the step current.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
+		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		r, err := resolveRun(p)
+		out, err := verbs.RunStepDone(c, verbs.RunStepDoneIn{RunRef: verbs.RunRef{Run: rbRun}, Evidence: strings.Join(args, " ")})
 		if err != nil {
 			return err
 		}
-		out, err := runbook.Complete(p, r.ID, strings.Join(args, " "), rbAgent)
-		if err != nil {
-			return err
+		if emit(out) {
+			return nil
 		}
-		state := "done"
-		if out.Verified {
-			state = "verified"
-		}
-		fmt.Printf("step %d %s (%s)\n", out.Step.Idx, state, out.Note)
-		if out.Finished {
-			fmt.Printf("run %s completed\n", r.Short())
-		} else {
-			r, _ = runbook.Get(p, r.ID)
-			if s := r.Current(); s != nil {
-				fmt.Printf("next: step %d  %-6s %s\n", s.Idx, s.Kind, s.Text)
-			}
-		}
+		printStepOut(out)
 		return nil
 	},
 }
@@ -249,22 +246,18 @@ var runbookSkipCmd = &cobra.Command{
 	Short: "Skip the current step, with a reason",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
+		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		r, err := resolveRun(p)
+		out, err := verbs.RunSkip(c, verbs.RunSkipIn{RunRef: verbs.RunRef{Run: rbRun}, Reason: rbReason})
 		if err != nil {
 			return err
 		}
-		out, err := runbook.Skip(p, r.ID, rbReason, rbAgent)
-		if err != nil {
-			return err
+		if emit(out) {
+			return nil
 		}
-		fmt.Printf("step %d skipped: %s\n", out.Step.Idx, out.Step.Reason)
-		if out.Finished {
-			fmt.Printf("run %s completed (with skips)\n", r.Short())
-		}
+		printStepOut(out)
 		return nil
 	},
 }
@@ -274,19 +267,18 @@ var runbookAbandonCmd = &cobra.Command{
 	Short: "End a run without completing it",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
+		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		r, err := resolveRun(p)
+		out, err := verbs.RunAbandon(c, verbs.RunAbandonIn{RunRef: verbs.RunRef{Run: rbRun}, Reason: rbReason})
 		if err != nil {
 			return err
 		}
-		r, err = runbook.Abandon(p, r.ID, rbReason, rbAgent)
-		if err != nil {
-			return err
+		if emit(out) {
+			return nil
 		}
-		fmt.Printf("run %s abandoned\n", r.Short())
+		fmt.Printf("run %s abandoned\n", short(out.ID))
 		return nil
 	},
 }
@@ -295,14 +287,12 @@ func init() {
 	runbookStepAddCmd.Flags().StringVarP(&rbKind, "kind", "k", "do", "ask | do | gears | git | gate")
 	runbookStepAddCmd.Flags().StringVar(&rbCheck, "check", "", "evidence check for the kind (see runbook --help)")
 	runbookStartCmd.Flags().StringVar(&rbTarget, "target", "", "what the run is about: a card key, a repo, a slug")
-
 	for _, c := range []*cobra.Command{runbookStepDoneCmd, runbookSkipCmd, runbookAbandonCmd} {
 		c.Flags().StringVar(&rbRun, "run", "", "run id (default: the only active run)")
 	}
 	runbookSkipCmd.Flags().StringVar(&rbReason, "reason", "", "why the step is skipped (required)")
 	runbookAbandonCmd.Flags().StringVar(&rbReason, "reason", "", "why the run is abandoned (required)")
 
-	runbookCmd.PersistentFlags().StringVarP(&rbAgent, "agent", "a", "", "act as this agent (default: $GEARS_AGENT or \"local\")")
 	runbookStepCmd.AddCommand(runbookStepAddCmd, runbookStepDoneCmd)
 	runbookCmd.AddCommand(runbookNewCmd, runbookListCmd, runbookShowCmd, runbookStartCmd, runbookStepCmd, runbookSkipCmd, runbookAbandonCmd)
 	root.AddCommand(runbookCmd)

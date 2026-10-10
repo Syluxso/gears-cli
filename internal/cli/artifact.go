@@ -6,15 +6,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Syluxso/gears/internal/artifact"
-	"github.com/Syluxso/gears/internal/project"
-	"github.com/Syluxso/gears/internal/shape"
+	"github.com/Syluxso/gears/internal/verbs"
 )
 
-var (
-	artifactAgent string
-	artifactTag   string
-)
+var artifactTagFilter string
 
 var artifactCmd = &cobra.Command{
 	Use:   "artifact",
@@ -36,15 +31,18 @@ instead of inventing structure.
   gears artifact new story "Desk handoff"`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
+		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		a, err := artifact.New(p, args[0], strings.Join(args[1:], " "), artifactAgent)
+		out, err := verbs.ArtifactNew(c, verbs.ArtifactNewIn{Prefix: args[0], Title: strings.Join(args[1:], " ")})
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%s  %s\n", a.ID[:8], a.Path)
+		if emit(out) {
+			return nil
+		}
+		fmt.Printf("%s  %s\n", short(out.ID), out.Path)
 		return nil
 	},
 }
@@ -54,20 +52,22 @@ var artifactListCmd = &cobra.Command{
 	Short: "List artifacts with tags and shape status",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
+		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		list, err := artifact.List(p)
+		out, err := verbs.ArtifactList(c, verbs.ArtifactListIn{Tag: artifactTagFilter})
 		if err != nil {
 			return err
 		}
-		n := 0
-		for _, a := range list {
-			if artifactTag != "" && !has(a.Tags, project.Slugify(artifactTag)) {
-				continue
-			}
-			n++
+		if emit(out) {
+			return nil
+		}
+		if len(out.Artifacts) == 0 {
+			fmt.Println("no artifacts. create one: gears artifact new adr \"...\"")
+			return nil
+		}
+		for _, a := range out.Artifacts {
 			mark := "ok"
 			if !a.FilePresent {
 				mark = "!! file missing"
@@ -78,10 +78,7 @@ var artifactListCmd = &cobra.Command{
 			if len(a.Tags) > 0 {
 				tags = " #" + strings.Join(a.Tags, " #")
 			}
-			fmt.Printf("%s  %-7s %-48s %s%s\n", a.ID[:8], a.Prefix, a.File, mark, tags)
-		}
-		if n == 0 {
-			fmt.Println("no artifacts. create one: gears artifact new adr \"...\"")
+			fmt.Printf("%s  %-7s %-48s %s%s\n", short(a.ID), a.Prefix, a.File, mark, tags)
 		}
 		return nil
 	},
@@ -96,15 +93,26 @@ var artifactTagCmd = &cobra.Command{
   gears artifact tag 3f2a9c1 -api`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
+		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		a, err := artifact.Tag(p, args[0], args[1:])
+		in := verbs.ArtifactTagIn{Artifact: args[0]}
+		for _, t := range args[1:] {
+			if strings.HasPrefix(t, "-") {
+				in.Remove = append(in.Remove, t[1:])
+			} else {
+				in.Add = append(in.Add, strings.TrimPrefix(t, "+"))
+			}
+		}
+		out, err := verbs.ArtifactTag(c, in)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%s  #%s\n", a.File, strings.Join(a.Tags, " #"))
+		if emit(out) {
+			return nil
+		}
+		fmt.Printf("%s  #%s\n", out.File, strings.Join(out.Tags, " #"))
 		return nil
 	},
 }
@@ -117,20 +125,23 @@ row, and update rows whose file changed. Runs automatically on list and
 status; call it directly to see what it did.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
+		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		changes, err := artifact.Reconcile(p)
+		out, err := verbs.ArtifactReconcile(c, verbs.ArtifactReconcileIn{})
 		if err != nil {
 			return err
 		}
-		if len(changes) == 0 {
+		if emit(out) {
+			return nil
+		}
+		if len(out.Changes) == 0 {
 			fmt.Println("rows and files agree")
 			return nil
 		}
-		for _, c := range changes {
-			fmt.Printf("%-11s %-48s %s\n", c.Action, c.File, c.Detail)
+		for _, ch := range out.Changes {
+			fmt.Printf("%-11s %-48s %s\n", ch.Action, ch.File, ch.Detail)
 		}
 		return nil
 	},
@@ -141,29 +152,32 @@ var artifactValidateCmd = &cobra.Command{
 	Short: "Check artifacts against their shapes",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
+		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		list, err := artifact.List(p)
+		in := verbs.ArtifactValidateIn{}
+		if len(args) == 1 {
+			in.File = args[0]
+		}
+		out, err := verbs.ArtifactValidate(c, in)
 		if err != nil {
 			return err
 		}
-		bad := 0
-		for _, a := range list {
-			if len(args) == 1 && a.File != args[0] {
-				continue
+		if emit(out) {
+			if len(out.Problems) > 0 {
+				return fmt.Errorf("%d artifact%s failed shape validation", len(out.Problems), plural(len(out.Problems), "", "s"))
 			}
-			if errs := artifact.Validate(p, a); len(errs) > 0 {
-				bad++
-				fmt.Printf("%s\n", a.File)
-				for _, e := range errs {
-					fmt.Printf("  - %s\n", e)
-				}
+			return nil
+		}
+		for _, p := range out.Problems {
+			fmt.Println(p.File)
+			for _, e := range p.Errors {
+				fmt.Printf("  - %s\n", e)
 			}
 		}
-		if bad > 0 {
-			return fmt.Errorf("%d artifact%s failed shape validation", bad, plural(bad, "", "s"))
+		if len(out.Problems) > 0 {
+			return fmt.Errorf("%d artifact%s failed shape validation", len(out.Problems), plural(len(out.Problems), "", "s"))
 		}
 		fmt.Println("all artifacts pass their shapes")
 		return nil
@@ -175,24 +189,19 @@ var artifactShapesCmd = &cobra.Command{
 	Short: "Show the shapes in force for this project",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
+		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		set, err := shape.Load(p.ArtifactsDir())
+		out, err := verbs.Shapes(c, verbs.ShapesIn{})
 		if err != nil {
 			return err
 		}
-		for _, pre := range artifact.Prefixes {
-			s, ok := set[pre]
-			if !ok {
-				continue
-			}
-			src := "built-in"
-			if s.Source != "" {
-				src = s.Source
-			}
-			fmt.Printf("%-7s %s  [%s]\n", pre, s.Title, src)
+		if emit(out) {
+			return nil
+		}
+		for _, s := range out.Shapes {
+			fmt.Printf("%-7s %s  [%s]\n", s.Prefix, s.Title, s.Source)
 			if len(s.FrontMatter) > 0 {
 				fmt.Printf("        front matter: %s\n", strings.Join(s.FrontMatter, ", "))
 			}
@@ -208,17 +217,7 @@ var artifactShapesCmd = &cobra.Command{
 }
 
 func init() {
-	artifactNewCmd.Flags().StringVarP(&artifactAgent, "agent", "a", "", "agent label recorded as creator (default: $GEARS_AGENT or \"local\")")
-	artifactListCmd.Flags().StringVar(&artifactTag, "tag", "", "only artifacts with this tag")
+	artifactListCmd.Flags().StringVar(&artifactTagFilter, "tag", "", "only artifacts with this tag")
 	artifactCmd.AddCommand(artifactNewCmd, artifactListCmd, artifactTagCmd, artifactReconcileCmd, artifactValidateCmd, artifactShapesCmd)
 	root.AddCommand(artifactCmd)
-}
-
-func has(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }

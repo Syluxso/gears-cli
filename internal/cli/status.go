@@ -2,19 +2,14 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Syluxso/gears/internal/artifact"
-	"github.com/Syluxso/gears/internal/desk"
-	"github.com/Syluxso/gears/internal/project"
-	"github.com/Syluxso/gears/internal/runbook"
-	"github.com/Syluxso/gears/internal/session"
+	"github.com/Syluxso/gears/internal/verbs"
 )
-
-var statusAgent string
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
@@ -24,110 +19,75 @@ items, active runs, artifacts and whether they pass their shapes, and the
 latest session entries. Run it first in every session.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
+		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		agent := statusAgent
-		if agent == "" {
-			agent = session.DefaultAgent()
-		}
-
-		fmt.Printf("project   %s\n", p.Slug)
-		fmt.Printf("agent     %s\n", agent)
-		fmt.Printf("root      %s\n", p.Root)
-
-		// Desk first: it is what someone left for this agent.
-		items, err := desk.List(p, desk.Filter{Agent: agent})
+		out, err := verbs.Status(c, verbs.StatusIn{})
 		if err != nil {
 			return err
 		}
-		fmt.Printf("\ndesk      %d open item%s\n", len(items), plural(len(items), "", "s"))
-		for _, it := range items {
-			to := it.To
-			if to == "" {
-				to = "anyone"
-			}
-			fmt.Printf("  %s  %-8s %s → %s  %s\n", it.Short(), it.Type, it.From, to, it.Text)
+		if emit(out) {
+			return nil
 		}
 
-		// Active runs.
-		runs, err := runbook.Active(p)
-		if err != nil {
-			return err
+		fmt.Printf("project   %s\n", out.Project)
+		fmt.Printf("agent     %s\n", out.Agent)
+		fmt.Printf("root      %s\n", out.Root)
+
+		fmt.Printf("\ndesk      %d open item%s\n", len(out.Desk), plural(len(out.Desk), "", "s"))
+		for _, it := range out.Desk {
+			fmt.Printf("  %s  %-8s %s → %s  %s\n", short(it.ID), it.Type, it.From, orAnyone(it.To), it.Text)
 		}
-		if len(runs) > 0 {
-			fmt.Printf("\nruns      %d active\n", len(runs))
-			for _, r := range runs {
+
+		if len(out.Runs) > 0 {
+			fmt.Printf("\nruns      %d active\n", len(out.Runs))
+			for _, r := range out.Runs {
 				fmt.Print("  ")
-				printRunLine(r)
+				printRunSummary(r)
 			}
 		}
 
-		// Artifacts, reconciled, grouped by prefix, with problems.
-		list, err := artifact.List(p)
-		if err != nil {
-			return err
-		}
-		counts := map[string]int{}
-		var problems []string
-		for _, a := range list {
-			counts[a.Prefix]++
-			switch {
-			case !a.FilePresent:
-				problems = append(problems, a.File+": file missing")
-			case !a.ShapeOK:
-				problems = append(problems, a.File+": "+strings.Join(a.ShapeErrors, "; "))
-			}
-		}
-		fmt.Printf("\nartifacts %d", len(list))
-		if len(list) > 0 {
+		fmt.Printf("\nartifacts %d", out.Artifacts.Total)
+		if out.Artifacts.Total > 0 {
 			var parts []string
 			for _, pre := range artifact.Prefixes {
-				if n := counts[pre]; n > 0 {
+				if n := out.Artifacts.ByPrefix[pre]; n > 0 {
 					parts = append(parts, fmt.Sprintf("%s %d", pre, n))
 				}
 			}
 			fmt.Printf("  (%s)", strings.Join(parts, ", "))
 		}
 		fmt.Println()
-		for _, s := range problems {
+		for _, s := range out.Artifacts.Problems {
 			fmt.Println("  !", s)
 		}
 
-		// Session log: today's entries, newest last.
-		entries, err := session.Today(p)
-		if err != nil {
-			return err
+		fmt.Printf("\nsession   %d entr%s today\n", len(out.Session), plural(len(out.Session), "y", "ies"))
+		for _, e := range out.Session {
+			fmt.Printf("  %s  %-9s %-8s %s\n", hhmm(e.At), e.Agent, e.Kind, e.Text)
 		}
-		fmt.Printf("\nsession   %d entr%s today\n", len(entries), plural(len(entries), "y", "ies"))
-		for _, e := range entries {
-			fmt.Printf("  %s  %-9s %-8s %s\n", e.At.Format("15:04"), e.Agent, e.Kind, e.Text)
-		}
-		if len(entries) == 0 {
-			fmt.Println("  log the first one: gears session new --kind done \"...\"")
-		}
+
+		fmt.Printf("\nnext      %s\n", out.NextAction)
 		return nil
 	},
 }
 
 func init() {
-	statusCmd.Flags().StringVarP(&statusAgent, "agent", "a", "", "view as this agent (default: $GEARS_AGENT or \"local\")")
 	root.AddCommand(statusCmd)
 }
 
-func mustCwd() string {
-	dir, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+func orAnyone(to string) string {
+	if to == "" {
+		return "anyone"
 	}
-	return dir
+	return to
 }
 
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return one
+func parseTS(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
 	}
-	return many
+	return t
 }

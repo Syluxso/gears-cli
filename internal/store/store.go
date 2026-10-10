@@ -6,6 +6,7 @@ package store
 import (
 	"database/sql"
 	"os"
+	"path/filepath"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -19,12 +20,15 @@ func Open(p *project.Project) (*sql.DB, error) {
 	if err := os.MkdirAll(p.GearsDir(), 0o755); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", p.CachePath())
+	// busy_timeout: the MCP server dispatches tool calls concurrently and each
+	// verb opens its own handle, so a writer must wait for another rather
+	// than fail with SQLITE_BUSY. WAL lets readers run during a write.
+	dsn := "file:" + filepath.ToSlash(p.CachePath()) + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
-	// One local writer at a time is fine; WAL lets status read while a
-	// command writes.
+	db.SetMaxOpenConns(1)
 	for _, s := range schema {
 		if _, err := db.Exec(s); err != nil {
 			db.Close()
@@ -55,9 +59,6 @@ func Parse(s string) time.Time {
 }
 
 var schema = []string{
-	`PRAGMA journal_mode = WAL`,
-	`PRAGMA foreign_keys = ON`,
-
 	// Sessions: one timeline per project, entries from every agent.
 	`CREATE TABLE IF NOT EXISTS session_entries (
 		id    INTEGER PRIMARY KEY,

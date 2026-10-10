@@ -6,14 +6,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Syluxso/gears/internal/project"
-	"github.com/Syluxso/gears/internal/session"
+	"github.com/Syluxso/gears/internal/verbs"
 )
 
 var (
-	sessionKind  string
-	sessionAgent string
-	sessionDays  int
+	sessionKind string
+	sessionDays int
 )
 
 var sessionCmd = &cobra.Command{
@@ -25,7 +23,8 @@ var sessionNewCmd = &cobra.Command{
 	Use:   "new <text>",
 	Short: "Append an entry to today's session log",
 	Long: `Append one entry to the session log. Entries are timestamped and fold
-into one timeline with every other agent's entries.
+into one timeline with every other agent's entries. Prints the entry id
+first so it can be used as runbook evidence.
 
 Kinds:
   done      something finished; name the files or the card
@@ -36,15 +35,18 @@ Kinds:
   gears session new --kind done "Scaffolded gears-cli: init, status, artifact, session"`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
+		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		e, err := session.Append(p, sessionKind, sessionAgent, strings.Join(args, " "))
+		out, err := verbs.SessionNew(c, verbs.SessionNewIn{Kind: sessionKind, Text: strings.Join(args, " ")})
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%s  %s  %s  %s\n", e.At.Format("2006-01-02 15:04"), e.Agent, e.Kind, e.Text)
+		if emit(out) {
+			return nil
+		}
+		fmt.Printf("%d  %s  %s  %s  %s\n", out.ID, hhmm(out.At), out.Agent, out.Kind, out.Text)
 		return nil
 	},
 }
@@ -54,25 +56,28 @@ var sessionListCmd = &cobra.Command{
 	Short: "Show recent session entries, oldest first",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
+		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		entries, err := session.Recent(p, sessionDays)
+		out, err := verbs.SessionList(c, verbs.SessionListIn{Days: sessionDays})
 		if err != nil {
 			return err
 		}
-		if len(entries) == 0 {
+		if emit(out) {
+			return nil
+		}
+		if len(out.Entries) == 0 {
 			fmt.Println("no entries")
 			return nil
 		}
 		day := ""
-		for _, e := range entries {
-			if d := e.At.Format("2006-01-02"); d != day {
+		for _, e := range out.Entries {
+			if d := parseTS(e.At).Local().Format("2006-01-02"); d != day {
 				day = d
 				fmt.Printf("\n%s\n", day)
 			}
-			fmt.Printf("  %s  %-9s %-8s %s\n", e.At.Format("15:04"), e.Agent, e.Kind, e.Text)
+			fmt.Printf("  %-4d %s  %-9s %-8s %s\n", e.ID, hhmm(e.At), e.Agent, e.Kind, e.Text)
 		}
 		return nil
 	},
@@ -80,7 +85,6 @@ var sessionListCmd = &cobra.Command{
 
 func init() {
 	sessionNewCmd.Flags().StringVarP(&sessionKind, "kind", "k", "done", "done | decision | problem | next")
-	sessionNewCmd.Flags().StringVarP(&sessionAgent, "agent", "a", "", "agent label (default: $GEARS_AGENT or \"local\")")
 	sessionListCmd.Flags().IntVar(&sessionDays, "days", 3, "how many days back to show")
 	sessionCmd.AddCommand(sessionNewCmd, sessionListCmd)
 	root.AddCommand(sessionCmd)

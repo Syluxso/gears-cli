@@ -31,3 +31,7 @@ Thumbs.db
 
 # Local build output
 bin/
+
+# Gears local state
+.gears/cache.db
+.gears/run.pid

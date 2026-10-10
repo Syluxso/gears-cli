@@ -6,19 +6,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Syluxso/gears/internal/desk"
-	"github.com/Syluxso/gears/internal/project"
-	"github.com/Syluxso/gears/internal/session"
+	"github.com/Syluxso/gears/internal/verbs"
 )
 
 var (
-	deskType     string
+	deskSendType string
 	deskListType string
 	deskTo       string
-	deskFrom     string
 	deskRef      string
 	deskAll      bool
-	deskAgent    string
 )
 
 var deskCmd = &cobra.Command{
@@ -34,43 +30,13 @@ The type of an item is its lifecycle:
   handoff  tried, result, next. never closes`,
 }
 
-var deskListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "Open items for this agent (or anyone)",
-	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
-		if err != nil {
-			return err
-		}
-		agent := deskAgent
-		if agent == "" {
-			agent = session.DefaultAgent()
-		}
-		items, err := desk.List(p, desk.Filter{Agent: agent, All: deskAll, Type: deskListType})
-		if err != nil {
-			return err
-		}
-		if len(items) == 0 {
-			fmt.Printf("desk is clear for %s\n", agent)
-			return nil
-		}
-		printDesk(items)
-		return nil
-	},
-}
-
-func printDesk(items []desk.Item) {
+func printDeskItems(items []verbs.DeskItem) {
 	for _, it := range items {
-		to := it.To
-		if to == "" {
-			to = "anyone"
-		}
 		state := ""
 		if it.State == "closed" {
 			state = "  [closed]"
 		}
-		fmt.Printf("%s  %-8s %s → %s%s\n", it.Short(), it.Type, it.From, to, state)
+		fmt.Printf("%s  %-8s %s → %s%s\n", short(it.ID), it.Type, it.From, orAnyone(it.To), state)
 		fmt.Printf("          %s\n", it.Text)
 		if it.Ref != "" {
 			fmt.Printf("          ref %s\n", it.Ref)
@@ -81,6 +47,31 @@ func printDesk(items []desk.Item) {
 	}
 }
 
+var deskListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "Open items for this agent (or anyone)",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := ctx()
+		if err != nil {
+			return err
+		}
+		out, err := verbs.DeskList(c, verbs.DeskListIn{All: deskAll, Type: deskListType})
+		if err != nil {
+			return err
+		}
+		if emit(out) {
+			return nil
+		}
+		if len(out.Items) == 0 {
+			fmt.Printf("desk is clear for %s\n", out.Agent)
+			return nil
+		}
+		printDeskItems(out.Items)
+		return nil
+	},
+}
+
 var deskSendCmd = &cobra.Command{
 	Use:   "send <text>",
 	Short: "Place an item on a desk",
@@ -89,34 +80,41 @@ var deskSendCmd = &cobra.Command{
   gears desk send --type info --to claude-local "API port is 8220."`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := project.Find(mustCwd())
+		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		it, err := desk.Send(p, deskType, deskFrom, deskTo, strings.Join(args, " "), deskRef)
+		out, err := verbs.DeskSend(c, verbs.DeskSendIn{Type: deskSendType, To: deskTo, Text: strings.Join(args, " "), Ref: deskRef})
 		if err != nil {
 			return err
 		}
-		printDesk([]desk.Item{*it})
+		if emit(out) {
+			return nil
+		}
+		printDeskItems([]verbs.DeskItem{*out})
 		return nil
 	},
 }
 
-func deskVerb(use, short string, fn func(p *project.Project, key, agent string, args []string) (*desk.Item, error), min int) *cobra.Command {
+// deskVerb builds the four closing commands, which differ only in the verb.
+func deskVerb(use, short string, min int, fn func(verbs.Ctx, string, []string) (*verbs.DeskItem, error)) *cobra.Command {
 	return &cobra.Command{
 		Use:   use,
 		Short: short,
 		Args:  cobra.MinimumNArgs(min),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			p, err := project.Find(mustCwd())
+			c, err := ctx()
 			if err != nil {
 				return err
 			}
-			it, err := fn(p, args[0], deskAgent, args[1:])
+			out, err := fn(c, args[0], args[1:])
 			if err != nil {
 				return err
 			}
-			printDesk([]desk.Item{*it})
+			if emit(out) {
+				return nil
+			}
+			printDeskItems([]verbs.DeskItem{*out})
 			return nil
 		},
 	}
@@ -126,25 +124,23 @@ func init() {
 	deskListCmd.Flags().BoolVar(&deskAll, "all", false, "include closed items")
 	deskListCmd.Flags().StringVar(&deskListType, "type", "", "only this type")
 
-	deskSendCmd.Flags().StringVarP(&deskType, "type", "t", "info", "info | ask | event | work | handoff")
+	deskSendCmd.Flags().StringVarP(&deskSendType, "type", "t", "info", "info | ask | event | work | handoff")
 	deskSendCmd.Flags().StringVar(&deskTo, "to", "", "agent label (default: anyone)")
-	deskSendCmd.Flags().StringVar(&deskFrom, "from", "", "sender label (default: $GEARS_AGENT or \"local\")")
 	deskSendCmd.Flags().StringVar(&deskRef, "ref", "", "optional pointer: card key, run id, artifact file")
 
-	read := deskVerb("read <id>", "Read an item; info closes when read", func(p *project.Project, key, agent string, _ []string) (*desk.Item, error) {
-		return desk.Read(p, key, agent)
-	}, 1)
-	answer := deskVerb("answer <id> <text>", "Close an ask with a reply", func(p *project.Project, key, agent string, rest []string) (*desk.Item, error) {
-		return desk.Answer(p, key, agent, strings.Join(rest, " "))
-	}, 2)
-	done := deskVerb("done <id>", "Close a work item", func(p *project.Project, key, agent string, _ []string) (*desk.Item, error) {
-		return desk.Done(p, key, agent)
-	}, 1)
-	dismiss := deskVerb("dismiss <id>", "Close an event", func(p *project.Project, key, agent string, _ []string) (*desk.Item, error) {
-		return desk.Dismiss(p, key, agent)
-	}, 1)
+	read := deskVerb("read <id>", "Read an item; info closes when read", 1, func(c verbs.Ctx, id string, _ []string) (*verbs.DeskItem, error) {
+		return verbs.DeskRead(c, verbs.DeskIDIn{ID: id})
+	})
+	answer := deskVerb("answer <id> <text>", "Close an ask with a reply", 2, func(c verbs.Ctx, id string, rest []string) (*verbs.DeskItem, error) {
+		return verbs.DeskAnswer(c, verbs.DeskAnswerIn{ID: id, Answer: strings.Join(rest, " ")})
+	})
+	done := deskVerb("done <id>", "Close a work item", 1, func(c verbs.Ctx, id string, _ []string) (*verbs.DeskItem, error) {
+		return verbs.DeskDone(c, verbs.DeskIDIn{ID: id})
+	})
+	dismiss := deskVerb("dismiss <id>", "Close an event", 1, func(c verbs.Ctx, id string, _ []string) (*verbs.DeskItem, error) {
+		return verbs.DeskDismiss(c, verbs.DeskIDIn{ID: id})
+	})
 
-	deskCmd.PersistentFlags().StringVarP(&deskAgent, "agent", "a", "", "act as this agent (default: $GEARS_AGENT or \"local\")")
 	deskCmd.AddCommand(deskListCmd, deskSendCmd, read, answer, done, dismiss)
 	root.AddCommand(deskCmd)
 }
