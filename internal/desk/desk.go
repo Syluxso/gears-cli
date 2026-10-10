@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-
 	"github.com/Syluxso/gears-cli/internal/project"
 	"github.com/Syluxso/gears-cli/internal/session"
 	"github.com/Syluxso/gears-cli/internal/store"
