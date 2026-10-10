@@ -28,6 +28,13 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 	add(s, c, "desk_done", "Close a work item.", verbs.DeskDone)
 	add(s, c, "desk_dismiss", "Close an event without making it a card.", verbs.DeskDismiss)
 
+	add(s, c, "card_new", "Create a card on this project's board. Refused without a full story (asA, iWant, soThat) and at least one acceptance line, whatever the type. Types: story (default), defect, spike, chore; the type's own section is seeded empty beside them. scenarios and uat are offered, never seeded. Lands in the default state with key <PREFIX>-<n>.", verbs.CardNew)
+	add(s, c, "card_list", "The board: states in order with counts, then open cards. Filter by state or type; set all to include completed cards.", verbs.CardList)
+	add(s, c, "card_show", "One card by key (GRS-14), bare number, or id, with its sections.", verbs.CardShow)
+	add(s, c, "card_update", "Change a card's title, body, type, priority, artifact or externalKey, or its sections. story and acceptance replace; other cardData keys merge. The card must still pass the story-and-acceptance rule.", verbs.CardUpdate)
+	add(s, c, "card_move", "Move a card to another state by name. Completed stamps completedAt.", verbs.CardMove)
+	add(s, c, "card_delete", "Soft-delete a card. Its number is never reused.", verbs.CardDelete)
+
 	add(s, c, "session_new", "Append one entry to today's session log. Kinds: done, decision, problem, next. Write as the work happens. Returns the entry id, which a runbook step with check=session accepts as evidence.", verbs.SessionNew)
 	add(s, c, "session_list", "Session entries from the last N days (default 3), oldest first, every agent folded by time.", verbs.SessionList)
 
@@ -41,7 +48,7 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 	add(s, c, "runbook_list", "Runbooks in this project and the active runs.", verbs.RunbookList)
 	add(s, c, "runbook_show", "A runbook's steps, or a run's progress with evidence and verification per step.", verbs.RunbookShow)
 	add(s, c, "runbook_new", "Create an empty runbook. The only way to author one; add steps with runbook_step_add.", verbs.RunbookNew)
-	add(s, c, "runbook_step_add", "Append a step. Kinds: ask, do, gears, git, gate. Checks by kind: do=commit; gears=session|desk|artifact; git=branch|commit|pushed.", verbs.RunbookStepAdd)
+	add(s, c, "runbook_step_add", "Append a step. Kinds: ask, do, gears, git, gate. Checks by kind: do=commit; gears=session|desk|artifact|card; git=branch|commit|pushed.", verbs.RunbookStepAdd)
 	add(s, c, "runbook_start", "Start a run of a runbook. Step 1 lands on this agent's desk as a work item.", verbs.RunbookStart)
 	add(s, c, "runbook_step_done", "Complete the current step with evidence. Evidence naming a branch, commit, remote ref, session entry, desk item or artifact is verified against the real thing; failure is an error and the step stays current. Steps with no check are recorded as done, not verified.", verbs.RunStepDone)
 	add(s, c, "runbook_skip", "Skip the current step with a reason. The skip stays visible on the run.", verbs.RunSkip)

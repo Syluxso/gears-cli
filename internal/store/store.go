@@ -125,6 +125,42 @@ var schema = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_desk_items_state ON desk_items(state, created_at)`,
 
+	// Cards: one board per project. States are swimlanes; the last is
+	// terminal. Numbers never reuse (card_sequence), even across soft deletes.
+	`CREATE TABLE IF NOT EXISTS card_states (
+		id          TEXT PRIMARY KEY,
+		name        TEXT NOT NULL UNIQUE,
+		position    INTEGER NOT NULL,
+		is_default  INTEGER NOT NULL DEFAULT 0,
+		is_terminal INTEGER NOT NULL DEFAULT 0,
+		created_at  TEXT NOT NULL,
+		updated_at  TEXT NOT NULL
+	)`,
+	`CREATE TABLE IF NOT EXISTS card_sequence (
+		id          INTEGER PRIMARY KEY CHECK (id = 1),
+		last_number INTEGER NOT NULL DEFAULT 0
+	)`,
+	`CREATE TABLE IF NOT EXISTS cards (
+		id           TEXT PRIMARY KEY,
+		number       INTEGER NOT NULL UNIQUE,
+		key          TEXT NOT NULL UNIQUE,
+		title        TEXT NOT NULL,
+		body         TEXT NOT NULL DEFAULT '',
+		type         TEXT NOT NULL DEFAULT 'story',
+		state_id     TEXT NOT NULL REFERENCES card_states(id),
+		priority     INTEGER NOT NULL DEFAULT 0,
+		position     INTEGER NOT NULL DEFAULT 0,
+		card_data    TEXT NOT NULL DEFAULT '{}',
+		artifact     TEXT NOT NULL DEFAULT '',
+		external_key TEXT NOT NULL DEFAULT '',
+		created_by   TEXT NOT NULL,
+		created_at   TEXT NOT NULL,
+		updated_at   TEXT NOT NULL,
+		completed_at TEXT NOT NULL DEFAULT '',
+		deleted_at   TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_cards_state ON cards(state_id, position, number)`,
+
 	// Runs: one instance of a runbook. Steps are copied in at start so a
 	// later edit to the runbook does not rewrite history.
 	`CREATE TABLE IF NOT EXISTS runs (

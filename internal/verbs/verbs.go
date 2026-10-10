@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Syluxso/gears-cli/internal/artifact"
+	"github.com/Syluxso/gears-cli/internal/card"
 	"github.com/Syluxso/gears-cli/internal/desk"
 	"github.com/Syluxso/gears-cli/internal/project"
 	"github.com/Syluxso/gears-cli/internal/runbook"
@@ -50,11 +51,27 @@ type StatusOut struct {
 	ProjectID  string        `json:"projectId"`
 	Root       string        `json:"root"`
 	Agent      string        `json:"agent"`
+	Prefix     string        `json:"prefix"`
 	Desk       []DeskItem    `json:"desk"`
+	Cards      CardStats     `json:"cards"`
 	Runs       []RunSummary  `json:"runs"`
 	Artifacts  ArtifactStats `json:"artifacts"`
 	Session    []SessionLine `json:"sessionToday"`
 	NextAction string        `json:"nextAction"`
+}
+
+// CardStats is the board at a glance: open cards by state, in board order,
+// and the ready cards (default state) an agent can pick up.
+type CardStats struct {
+	Open    int         `json:"open"`
+	ByState []CardState `json:"byState"`
+	Ready   []CardLine  `json:"ready"`
+}
+
+type CardLine struct {
+	Key   string `json:"key"`
+	Type  string `json:"type"`
+	Title string `json:"title"`
 }
 
 type ArtifactStats struct {
@@ -65,8 +82,9 @@ type ArtifactStats struct {
 
 // Status assembles everything an agent needs before it starts.
 func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
-	out := &StatusOut{Project: c.Project.Slug, ProjectID: c.Project.ID, Root: c.Project.Root, Agent: c.agent(),
+	out := &StatusOut{Project: c.Project.Slug, ProjectID: c.Project.ID, Root: c.Project.Root, Agent: c.agent(), Prefix: c.Project.Prefix,
 		Desk: []DeskItem{}, Runs: []RunSummary{}, Session: []SessionLine{},
+		Cards:     CardStats{ByState: []CardState{}, Ready: []CardLine{}},
 		Artifacts: ArtifactStats{ByPrefix: map[string]int{}, Problems: []string{}}}
 
 	items, err := desk.List(c.Project, desk.Filter{Agent: out.Agent})
@@ -83,6 +101,35 @@ func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 	}
 	for _, r := range runs {
 		out.Runs = append(out.Runs, runSummary(r))
+	}
+
+	cards, err := card.List(c.Project, card.Filter{})
+	if err != nil {
+		return nil, err
+	}
+	if len(cards) > 0 {
+		sts, err := card.States(c.Project)
+		if err != nil {
+			return nil, err
+		}
+		counts := map[string]int{}
+		for _, cd := range cards {
+			counts[cd.State]++
+		}
+		for _, s := range sts {
+			if s.Terminal {
+				continue
+			}
+			out.Cards.ByState = append(out.Cards.ByState, CardState{Name: s.Name, Count: counts[s.Name], Default: s.Default})
+			out.Cards.Open += counts[s.Name]
+			if s.Default {
+				for _, cd := range cards {
+					if cd.State == s.Name {
+						out.Cards.Ready = append(out.Cards.Ready, CardLine{cd.Key, cd.Type, cd.Title})
+					}
+				}
+			}
+		}
 	}
 
 	arts, err := artifact.List(c.Project)
@@ -113,6 +160,8 @@ func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 		out.NextAction = "continue run " + out.Runs[0].ID[:8] + ": step " + itoa(out.Runs[0].Current.Idx) + " " + out.Runs[0].Current.Text
 	case len(out.Desk) > 0:
 		out.NextAction = "work the desk: " + len2(out.Desk) + " open item(s)"
+	case len(out.Cards.Ready) > 0:
+		out.NextAction = "pick a ready card: " + out.Cards.Ready[0].Key + " " + out.Cards.Ready[0].Title
 	case len(out.Session) == 0:
 		out.NextAction = "log the first session entry of the day"
 	default:
@@ -568,7 +617,7 @@ type RunbookStepAddIn struct {
 	Runbook string `json:"runbook" jsonschema:"Runbook slug."`
 	Kind    string `json:"kind" jsonschema:"ask (prompt the user) | do (agent work) | gears (a Gears verb as the step) | git (a repo state) | gate (wait for a condition)."`
 	Text    string `json:"text" jsonschema:"What the step asks for, in one line."`
-	Check   string `json:"check,omitempty" jsonschema:"How evidence is verified. do: commit. gears: session | desk | artifact. git: branch | commit | pushed. ask and gate take none."`
+	Check   string `json:"check,omitempty" jsonschema:"How evidence is verified. do: commit. gears: session | desk | artifact | card. git: branch | commit | pushed. ask and gate take none."`
 }
 
 func RunbookStepAdd(c Ctx, in RunbookStepAddIn) (*Runbook, error) {

@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/Syluxso/gears-cli/internal/card"
 	"github.com/Syluxso/gears-cli/internal/desk"
 	"github.com/Syluxso/gears-cli/internal/gitx"
 	"github.com/Syluxso/gears-cli/internal/project"
@@ -30,7 +31,7 @@ var Kinds = []string{"ask", "do", "gears", "git", "gate"}
 var Checks = map[string][]string{
 	"ask":   {},
 	"do":    {"commit"},
-	"gears": {"session", "desk", "artifact"},
+	"gears": {"session", "desk", "artifact", "card"},
 	"git":   {"branch", "commit", "pushed"},
 	"gate":  {},
 }
@@ -520,6 +521,11 @@ func verify(p *project.Project, r *Run, st *RunStep, evidence string) (verified 
 			return false, "", fmt.Errorf("desk item %q not found", evidence)
 		}
 		return true, "desk item exists", nil
+	case "card":
+		if !card.Exists(p, evidence) {
+			return false, "", fmt.Errorf("card %q not found", evidence)
+		}
+		return true, "card exists", nil
 	case "artifact":
 		if _, statErr := os.Stat(filepath.Join(p.ArtifactsDir(), evidence)); statErr != nil {
 			return false, "", fmt.Errorf("artifact %q not found", evidence)

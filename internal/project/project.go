@@ -30,8 +30,12 @@ type Project struct {
 	// ID is minted once at init (UUID v7, so it sorts by time) and committed,
 	// so every clone agrees on which project this is. It is the key the
 	// server will know the project by; slugs are for humans and collide.
-	ID      string    `yaml:"id"`
-	Slug    string    `yaml:"slug"`
+	ID   string `yaml:"id"`
+	Slug string `yaml:"slug"`
+	// Prefix is the card key prefix (GRS in GRS-14): two to eight A-Z0-9,
+	// derived from the slug unless init --prefix says otherwise. Committed, so
+	// every clone mints the same keys.
+	Prefix  string    `yaml:"prefix"`
 	Created time.Time `yaml:"created"`
 	// Root is the directory that holds .gears/. Not serialised.
 	Root string `yaml:"-"`
@@ -66,9 +70,15 @@ func Find(start string) (*Project, error) {
 				return nil, fmt.Errorf("%s: %w", path, err)
 			}
 			p.Root = dir
-			// Bindings written before ids existed get one now, once.
+			// Bindings written before ids or prefixes existed get them now, once.
+			changed := false
 			if p.ID == "" {
-				p.ID = NewID()
+				p.ID, changed = NewID(), true
+			}
+			if p.Prefix == "" {
+				p.Prefix, changed = DerivePrefix(p.Slug), true
+			}
+			if changed {
 				if out, err := yaml.Marshal(&p); err == nil {
 					_ = os.WriteFile(path, out, 0o644)
 				}
@@ -97,14 +107,56 @@ func Slugify(s string) string {
 	return strings.Trim(s, "-")
 }
 
+// DerivePrefix takes the first four A-Z0-9 characters of a slug, upper-cased:
+// gears -> GEAR, churchvida -> CHUR. byz-kan does the same for board names.
+func DerivePrefix(slug string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(slug) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+		if b.Len() >= 4 {
+			break
+		}
+	}
+	if b.Len() < 2 {
+		return "CARD"
+	}
+	return b.String()
+}
+
+// NormalizePrefix validates a user-supplied prefix: A-Z0-9 only, 2 to 8 long.
+func NormalizePrefix(raw string) (string, error) {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(strings.TrimSpace(raw)) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			return "", fmt.Errorf("prefix %q: letters and digits only", raw)
+		}
+	}
+	if b.Len() < 2 || b.Len() > 8 {
+		return "", fmt.Errorf("prefix %q: 2 to 8 characters", raw)
+	}
+	return b.String(), nil
+}
+
 // Init binds dir to a project. It is idempotent: anything already present is
 // kept and reported as such.
-func Init(dir, slug string) (*InitResult, error) {
+func Init(dir, slug, prefix string) (*InitResult, error) {
 	if slug == "" {
 		slug = Slugify(filepath.Base(dir))
 	}
 	if slug == "" {
 		return nil, errors.New("could not derive a slug; pass --slug")
+	}
+	if prefix != "" {
+		var err error
+		if prefix, err = NormalizePrefix(prefix); err != nil {
+			return nil, err
+		}
+	} else {
+		prefix = DerivePrefix(slug)
 	}
 	res := &InitResult{}
 	gears := filepath.Join(dir, Dir)
@@ -116,9 +168,15 @@ func Init(dir, slug string) (*InitResult, error) {
 		if err := yaml.Unmarshal(data, &p); err != nil {
 			return nil, fmt.Errorf("%s: %w", bindingPath, err)
 		}
-		res.Actions = append(res.Actions, "kept    "+rel(dir, bindingPath)+" (slug "+p.Slug+")")
+		if p.Prefix == "" {
+			p.Prefix = prefix
+			if out, err := yaml.Marshal(&p); err == nil {
+				_ = os.WriteFile(bindingPath, out, 0o644)
+			}
+		}
+		res.Actions = append(res.Actions, "kept    "+rel(dir, bindingPath)+" (slug "+p.Slug+", prefix "+p.Prefix+")")
 	} else {
-		p = Project{ID: NewID(), Slug: slug, Created: time.Now().UTC().Truncate(time.Second)}
+		p = Project{ID: NewID(), Slug: slug, Prefix: prefix, Created: time.Now().UTC().Truncate(time.Second)}
 		if err := os.MkdirAll(gears, 0o755); err != nil {
 			return nil, err
 		}

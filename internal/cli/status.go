@@ -31,13 +31,24 @@ latest session entries. Run it first in every session.`,
 			return nil
 		}
 
-		fmt.Printf("project   %s  %s\n", out.Project, out.ProjectID)
+		fmt.Printf("project   %s  %s  (cards %s-n)\n", out.Project, out.ProjectID, out.Prefix)
 		fmt.Printf("agent     %s\n", out.Agent)
 		fmt.Printf("root      %s\n", out.Root)
 
 		fmt.Printf("\ndesk      %d open item%s\n", len(out.Desk), plural(len(out.Desk), "", "s"))
 		for _, it := range out.Desk {
 			fmt.Printf("  %s  %-8s %s → %s  %s\n", short(it.ID), it.Type, it.From, orAnyone(it.To), it.Text)
+		}
+
+		if out.Cards.Open > 0 {
+			var parts []string
+			for _, s := range out.Cards.ByState {
+				parts = append(parts, fmt.Sprintf("%s %d", s.Name, s.Count))
+			}
+			fmt.Printf("\ncards     %d open  (%s)\n", out.Cards.Open, strings.Join(parts, ", "))
+			for _, cd := range out.Cards.Ready {
+				fmt.Printf("  %-8s %-7s %s\n", cd.Key, cd.Type, cd.Title)
+			}
 		}
 
 		if len(out.Runs) > 0 {

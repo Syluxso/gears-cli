@@ -9,7 +9,10 @@ import (
 	"github.com/Syluxso/gears-cli/internal/project"
 )
 
-var initSlug string
+var (
+	initSlug   string
+	initPrefix string
+)
 
 var initCmd = &cobra.Command{
 	Use:   "init",
@@ -25,7 +28,7 @@ tree. Safe to run again: existing files are left alone.`,
 		if err != nil {
 			return err
 		}
-		res, err := project.Init(dir, initSlug)
+		res, err := project.Init(dir, initSlug, initPrefix)
 		if err != nil {
 			return err
 		}
@@ -39,5 +42,6 @@ tree. Safe to run again: existing files are left alone.`,
 
 func init() {
 	initCmd.Flags().StringVar(&initSlug, "slug", "", "project slug (default: directory name)")
+	initCmd.Flags().StringVar(&initPrefix, "prefix", "", "card key prefix, e.g. GRS (default: from the slug)")
 	root.AddCommand(initCmd)
 }
