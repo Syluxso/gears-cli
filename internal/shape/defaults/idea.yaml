@@ -1,0 +1,8 @@
+# Something worth keeping that is not yet work.
+prefix: idea
+title: Idea
+frontMatter: [title, date]
+sections:
+  - The Idea
+  - What It Would Change
+minBody: 40

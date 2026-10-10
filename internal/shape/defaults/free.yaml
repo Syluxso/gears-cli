@@ -1,0 +1,6 @@
+# Anything else. The only rule is a title.
+prefix: free
+title: Free-form note
+frontMatter: [title]
+sections: []
+minBody: 0

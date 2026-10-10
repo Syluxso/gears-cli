@@ -1,0 +1,9 @@
+# A feature in the user's words. Written before implementation.
+prefix: story
+title: User story
+frontMatter: [title, status, date]
+sections:
+  - What We Are Building
+  - Why
+  - Acceptance Criteria
+minBody: 120

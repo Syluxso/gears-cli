@@ -1,0 +1,10 @@
+# Architecture Decision Record. Never rewritten; a new ADR supersedes.
+prefix: adr
+title: Architecture decision record
+frontMatter: [title, status, date]
+sections:
+  - Context
+  - Decision
+  - Options Considered
+  - Consequences
+minBody: 200
