@@ -19,10 +19,14 @@ const (
 	Dir          = ".gears"
 	BindingFile  = "project.yaml"
 	ArtifactsDir = "artifacts"
-	LocalFile    = "local.db"
+	// GearboxDir holds machine state under .gears/: the local record, the
+	// run pid, and later sync's cursor and change log. One directory, one
+	// gitignore line; a dot-directory so it reads like .git/.
+	GearboxDir = ".gearbox"
+	LocalFile  = "local.db"
+	RunPidFile = "run.pid"
 	// legacyCacheFile is the pre-rename name; Open moves it once.
 	legacyCacheFile = "cache.db"
-	RunPidFile      = "run.pid"
 )
 
 // Project is the binding file plus the root it was found in.
@@ -51,10 +55,17 @@ func NewID() string {
 	return id.String()
 }
 
-func (p *Project) GearsDir() string        { return filepath.Join(p.Root, Dir) }
-func (p *Project) ArtifactsDir() string    { return filepath.Join(p.GearsDir(), ArtifactsDir) }
-func (p *Project) LocalPath() string       { return filepath.Join(p.GearsDir(), LocalFile) }
-func (p *Project) LegacyLocalPath() string { return filepath.Join(p.GearsDir(), legacyCacheFile) }
+func (p *Project) GearsDir() string     { return filepath.Join(p.Root, Dir) }
+func (p *Project) ArtifactsDir() string { return filepath.Join(p.GearsDir(), ArtifactsDir) }
+func (p *Project) GearboxPath() string  { return filepath.Join(p.GearsDir(), GearboxDir) }
+func (p *Project) LocalPath() string    { return filepath.Join(p.GearboxPath(), LocalFile) }
+func (p *Project) RunPidPath() string   { return filepath.Join(p.GearboxPath(), RunPidFile) }
+
+// LegacyLocalPaths are the places the record lived before .gearbox/, newest
+// first. Open moves the first one it finds, once.
+func (p *Project) LegacyLocalPaths() []string {
+	return []string{filepath.Join(p.GearsDir(), LocalFile), filepath.Join(p.GearsDir(), legacyCacheFile)}
+}
 
 // ErrNotBound is returned when no .gears/project.yaml is found walking up.
 var ErrNotBound = errors.New("no Gears project here; run: gears init")
@@ -222,8 +233,7 @@ func ensureDir(path, root string, res *InitResult) error {
 }
 
 var ignoreLines = []string{
-	Dir + "/" + LocalFile,
-	Dir + "/" + RunPidFile,
+	Dir + "/" + GearboxDir + "/",
 }
 
 func ensureGitignore(root string, res *InitResult) error {

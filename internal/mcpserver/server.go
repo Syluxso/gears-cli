@@ -45,6 +45,8 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 	add(s, c, "artifact_validate", "Check artifacts against the shapes in force. Returns problems per file.", verbs.ArtifactValidate)
 	add(s, c, "artifact_shapes", "The shapes in force: required front matter, required sections, minimum body, and whether built-in or a project override.", verbs.Shapes)
 
+	add(s, c, "export", "Dump the local record (every table, every row) as JSON, or to a file with out. The record is not committed; this is its backup until sync exists.", verbs.Export)
+
 	add(s, c, "runbook_list", "Runbooks in this project and the active runs.", verbs.RunbookList)
 	add(s, c, "runbook_show", "A runbook's steps, or a run's progress with evidence and verification per step.", verbs.RunbookShow)
 	add(s, c, "runbook_new", "Create an empty runbook. The only way to author one; add steps with runbook_step_add.", verbs.RunbookNew)

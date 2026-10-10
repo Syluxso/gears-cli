@@ -17,7 +17,7 @@ import (
 // Open returns the local record for a project, creating it and its tables
 // on first use. Callers close it.
 func Open(p *project.Project) (*sql.DB, error) {
-	if err := os.MkdirAll(p.GearsDir(), 0o755); err != nil {
+	if err := os.MkdirAll(p.GearboxPath(), 0o755); err != nil {
 		return nil, err
 	}
 	migrateLegacy(p)
@@ -47,18 +47,24 @@ func Exists(p *project.Project) bool {
 	return err == nil
 }
 
-// migrateLegacy renames a pre-rename cache.db (and its WAL sidecars) to
-// local.db once. The file was always the record; only the name was wrong.
+// migrateLegacy moves a record from where earlier CLIs kept it
+// (.gears/local.db, before that .gears/cache.db) into .gearbox/, with its
+// WAL sidecars, once. The file was always the record; only the place was wrong.
 func migrateLegacy(p *project.Project) {
 	if _, err := os.Stat(p.LocalPath()); err == nil {
 		return
 	}
-	old := p.LegacyLocalPath()
-	if _, err := os.Stat(old); err != nil {
+	for _, old := range p.LegacyLocalPaths() {
+		if _, err := os.Stat(old); err != nil {
+			continue
+		}
+		if err := os.MkdirAll(p.GearboxPath(), 0o755); err != nil {
+			return
+		}
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			_ = os.Rename(old+suffix, p.LocalPath()+suffix)
+		}
 		return
-	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		_ = os.Rename(old+suffix, p.LocalPath()+suffix)
 	}
 }
 
