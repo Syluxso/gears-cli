@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 
 	"github.com/Syluxso/gears-cli/internal/project"
 	"github.com/Syluxso/gears-cli/internal/session"
@@ -155,7 +154,7 @@ func New(p *project.Project, prefix, title, agent string) (*Artifact, error) {
 	// Row first. The id is minted here so the artifact exists before any
 	// server has seen it.
 	a := &Artifact{
-		ID: uuid.NewString(), Prefix: prefix, Slug: slug, File: file, Path: path,
+		ID: project.NewID(), Prefix: prefix, Slug: slug, File: file, Path: path,
 		Title: title, Status: status, CreatedBy: agent,
 		BodyHash: hash(body), FilePresent: true,
 	}
@@ -425,7 +424,7 @@ func Reconcile(p *project.Project) ([]Change, error) {
 		if _, err := db.Exec(`INSERT INTO artifacts
 			(id, prefix, slug, file, title, status, created_at, created_by, updated_at, body_hash, file_present, shape_ok, shape_errors)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-			uuid.NewString(), prefix, slug, file, title, status, now, "adopted", now, hash(body), b2i(len(errs) == 0), strings.Join(errs, "; "),
+			project.NewID(), prefix, slug, file, title, status, now, "adopted", now, hash(body), b2i(len(errs) == 0), strings.Join(errs, "; "),
 		); err != nil {
 			return nil, err
 		}

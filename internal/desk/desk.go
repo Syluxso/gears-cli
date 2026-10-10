@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 
 	"github.com/Syluxso/gears-cli/internal/project"
 	"github.com/Syluxso/gears-cli/internal/session"
@@ -73,7 +72,7 @@ func Send(p *project.Project, typ, from, to, text, ref string) (*Item, error) {
 	}
 	defer db.Close()
 
-	it := &Item{ID: uuid.NewString(), Type: typ, From: from, To: strings.TrimSpace(to), Text: text, Ref: ref, State: "open"}
+	it := &Item{ID: project.NewID(), Type: typ, From: from, To: strings.TrimSpace(to), Text: text, Ref: ref, State: "open"}
 	now := store.Now()
 	if _, err := db.Exec(`INSERT INTO desk_items (id, type, from_agent, to_agent, text, ref, created_at, state)
 		VALUES (?, ?, ?, ?, ?, ?, ?, 'open')`,

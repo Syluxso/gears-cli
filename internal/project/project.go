@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
 
@@ -26,10 +27,24 @@ const (
 
 // Project is the binding file plus the root it was found in.
 type Project struct {
+	// ID is minted once at init (UUID v7, so it sorts by time) and committed,
+	// so every clone agrees on which project this is. It is the key the
+	// server will know the project by; slugs are for humans and collide.
+	ID      string    `yaml:"id"`
 	Slug    string    `yaml:"slug"`
 	Created time.Time `yaml:"created"`
 	// Root is the directory that holds .gears/. Not serialised.
 	Root string `yaml:"-"`
+}
+
+// NewID mints a UUID v7. Every row Gears creates uses this, so ids made
+// offline are globally unique and time-ordered when they reach the server.
+func NewID() string {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return uuid.NewString()
+	}
+	return id.String()
 }
 
 func (p *Project) GearsDir() string        { return filepath.Join(p.Root, Dir) }
@@ -51,6 +66,13 @@ func Find(start string) (*Project, error) {
 				return nil, fmt.Errorf("%s: %w", path, err)
 			}
 			p.Root = dir
+			// Bindings written before ids existed get one now, once.
+			if p.ID == "" {
+				p.ID = NewID()
+				if out, err := yaml.Marshal(&p); err == nil {
+					_ = os.WriteFile(path, out, 0o644)
+				}
+			}
 			return &p, nil
 		}
 		parent := filepath.Dir(dir)
@@ -96,7 +118,7 @@ func Init(dir, slug string) (*InitResult, error) {
 		}
 		res.Actions = append(res.Actions, "kept    "+rel(dir, bindingPath)+" (slug "+p.Slug+")")
 	} else {
-		p = Project{Slug: slug, Created: time.Now().UTC().Truncate(time.Second)}
+		p = Project{ID: NewID(), Slug: slug, Created: time.Now().UTC().Truncate(time.Second)}
 		if err := os.MkdirAll(gears, 0o755); err != nil {
 			return nil, err
 		}

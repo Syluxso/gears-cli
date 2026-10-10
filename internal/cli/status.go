@@ -31,7 +31,7 @@ latest session entries. Run it first in every session.`,
 			return nil
 		}
 
-		fmt.Printf("project   %s\n", out.Project)
+		fmt.Printf("project   %s  %s\n", out.Project, out.ProjectID)
 		fmt.Printf("agent     %s\n", out.Agent)
 		fmt.Printf("root      %s\n", out.Root)
 

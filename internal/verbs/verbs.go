@@ -47,6 +47,7 @@ type StatusIn struct{}
 // StatusOut is the cold-start packet.
 type StatusOut struct {
 	Project    string        `json:"project"`
+	ProjectID  string        `json:"projectId"`
 	Root       string        `json:"root"`
 	Agent      string        `json:"agent"`
 	Desk       []DeskItem    `json:"desk"`
@@ -64,7 +65,7 @@ type ArtifactStats struct {
 
 // Status assembles everything an agent needs before it starts.
 func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
-	out := &StatusOut{Project: c.Project.Slug, Root: c.Project.Root, Agent: c.agent(),
+	out := &StatusOut{Project: c.Project.Slug, ProjectID: c.Project.ID, Root: c.Project.Root, Agent: c.agent(),
 		Desk: []DeskItem{}, Runs: []RunSummary{}, Session: []SessionLine{},
 		Artifacts: ArtifactStats{ByPrefix: map[string]int{}, Problems: []string{}}}
 

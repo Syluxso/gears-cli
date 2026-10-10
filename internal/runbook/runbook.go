@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 
 	"github.com/Syluxso/gears-cli/internal/desk"
@@ -192,7 +191,7 @@ func Start(p *project.Project, slug, target, agent string) (*Run, error) {
 	}
 	defer db.Close()
 
-	r := &Run{ID: uuid.NewString(), Runbook: slug, Target: target, Agent: agent, Status: "active"}
+	r := &Run{ID: project.NewID(), Runbook: slug, Target: target, Agent: agent, Status: "active"}
 	now := store.Now()
 	if _, err := db.Exec(`INSERT INTO runs (id, runbook, target, agent, started_at, status) VALUES (?, ?, ?, ?, ?, 'active')`,
 		r.ID, r.Runbook, r.Target, r.Agent, now); err != nil {
