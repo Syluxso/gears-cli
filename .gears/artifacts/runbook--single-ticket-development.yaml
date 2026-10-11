@@ -1,0 +1,30 @@
+# Runbook. Authored with gears runbook; edit through it so the shape stays finite.
+title: Single ticket development
+slug: single-ticket-development
+created: "2026-10-10"
+target: card
+steps:
+    - kind: gears
+      text: Take the card
+      check: card
+      arg: In Progress
+    - kind: git
+      text: Branch from main, named after the card
+      check: branch
+    - kind: do
+      text: Implement; commit on the branch
+      check: commit
+    - kind: gears
+      text: Log what was done
+      check: session
+    - kind: ask
+      text: Does this need a review before merge? yes/no
+      name: review
+    - kind: gate
+      text: Wait for the push
+      check: pushed
+      when: review=yes
+    - kind: gears
+      text: Hand the card to testing
+      check: card
+      arg: Testing

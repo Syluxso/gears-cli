@@ -100,8 +100,16 @@ func checklistOut(cl card.Checklist) CardChecklist {
 }
 
 // CardFull is a card with its trail.
+type CardRun struct {
+	ID      string `json:"id"`
+	Runbook string `json:"runbook"`
+	Agent   string `json:"agent"`
+	Step    string `json:"step,omitempty"`
+}
+
 type CardFull struct {
 	Card
+	Run        *CardRun        `json:"run,omitempty"`
 	BlockedBy  []string        `json:"blockedBy"`
 	Comments   []CardComment   `json:"comments"`
 	Links      []CardLink      `json:"links"`
@@ -113,6 +121,9 @@ type CardFull struct {
 func fullOut(f *card.Full) *CardFull {
 	out := &CardFull{Card: cardOut(f.Card), BlockedBy: nz(f.Blocked()), Comments: []CardComment{}, Links: []CardLink{},
 		Checklists: []CardChecklist{}, Children: []Card{}, Events: []CardEvent{}}
+	if f.Run != nil {
+		out.Run = &CardRun{ID: f.Run.ID, Runbook: f.Run.Runbook, Agent: f.Run.Agent, Step: f.Run.Step}
+	}
 	for _, cm := range f.Comments {
 		out.Comments = append(out.Comments, CardComment{ID: cm.ID, Agent: cm.Agent, Body: cm.Body, CreatedAt: ts(cm.CreatedAt)})
 	}

@@ -83,6 +83,25 @@ func Exists(p *project.Project, id int64) bool {
 	return n == 1
 }
 
+// Find returns one entry by id, so a run can check who wrote it and when.
+func Find(p *project.Project, id int64) (*Entry, error) {
+	if !store.Exists(p) {
+		return nil, fmt.Errorf("session entry %d not found", id)
+	}
+	db, err := store.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	var e Entry
+	var at string
+	if err := db.QueryRow(`SELECT id, at, agent, kind, text FROM session_entries WHERE id = ?`, id).Scan(&e.ID, &at, &e.Agent, &e.Kind, &e.Text); err != nil {
+		return nil, fmt.Errorf("session entry %d not found", id)
+	}
+	e.At = store.Parse(at)
+	return &e, nil
+}
+
 // Today returns today's entries (local calendar day), oldest first.
 func Today(p *project.Project) ([]Entry, error) {
 	now := time.Now()

@@ -16,6 +16,7 @@ import (
 var Tables = []string{
 	"session_entries", "artifacts", "artifact_tags",
 	"desk_items", "card_states", "card_sequence", "cards",
+	"card_tags", "card_comments", "card_links", "card_checklists", "card_checklist_items", "card_events",
 	"runs", "run_steps",
 }
 

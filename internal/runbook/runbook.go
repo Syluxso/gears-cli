@@ -1,7 +1,13 @@
 // Package runbook holds the two halves of a process an agent cannot fake:
 // the definition (a runbook--*.yaml artifact, authored only here, with a
-// fixed step vocabulary) and the run (a record of one execution, with a
-// timestamp and verified evidence per step).
+// fixed step vocabulary) and the run (a record of one execution, bound to a
+// card and a branch, with a timestamp and verified evidence per step).
+//
+// Rules (decided 2026-10-10): one active run per agent; only the agent that
+// started a run advances it, unless another takes it over explicitly; an
+// active run owns its card's state; evidence is a Gears or git object,
+// never a shell command, and is checked against the run (its card, its
+// branch, when the step began), not merely for existence.
 package runbook
 
 import (
@@ -14,6 +20,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/Syluxso/gears-cli/internal/artifact"
 	"github.com/Syluxso/gears-cli/internal/card"
 	"github.com/Syluxso/gears-cli/internal/desk"
 	"github.com/Syluxso/gears-cli/internal/gitx"
@@ -25,15 +32,32 @@ import (
 // Kinds is the whole step vocabulary.
 var Kinds = []string{"ask", "do", "gears", "git", "gate"}
 
-// Checks a step may declare, by kind. The check names what the evidence must
-// be and how it is verified. A kind with no check accepts any non-empty
-// evidence and is marked done, not verified.
+// Targets a runbook may declare. card: a run needs a card and owns its
+// state. repo: a run is about the repository. none: free-standing.
+var Targets = []string{"card", "repo", "none"}
+
+// Checks a step may declare, by kind. A check names what the evidence is
+// and how it is verified against the run. Some take an argument, written
+// check:arg (card:Testing, merged:main).
+//
+//	branch     evidence is a branch name; it must exist; the run binds to it
+//	commit     evidence is a commit; it must be on the run's branch and
+//	           made after the run started
+//	pushed     the run's branch is on origin with every local commit
+//	merged     the run's branch is contained in arg (default main)
+//	clean      the working tree has no uncommitted changes
+//	session    gears: the step logs the evidence text as a session entry
+//	desk       evidence is a desk item created after the step began
+//	           (gate: it must be closed, i.e. answered or done)
+//	artifact   evidence is an artifact file that passes its shape
+//	card       the run's card; gears card:State moves it there as the step
+//	           (gate card:State waits for it to be there)
 var Checks = map[string][]string{
 	"ask":   {},
-	"do":    {"commit"},
+	"do":    {"commit", "clean"},
 	"gears": {"session", "desk", "artifact", "card"},
-	"git":   {"branch", "commit", "pushed"},
-	"gate":  {},
+	"git":   {"branch", "commit", "pushed", "merged", "clean"},
+	"gate":  {"pushed", "merged", "card", "desk"},
 }
 
 // Step is one line of a runbook definition.
@@ -41,6 +65,13 @@ type Step struct {
 	Kind  string `yaml:"kind"`
 	Text  string `yaml:"text"`
 	Check string `yaml:"check,omitempty"`
+	Arg   string `yaml:"arg,omitempty"`
+	// Name lets a later step refer to this step's evidence in when:.
+	// Required for ask steps that drive a branch.
+	Name string `yaml:"name,omitempty"`
+	// When is "<name>=<value>" or "<name>!=<value>" on an earlier step. A
+	// step whose condition does not hold is skipped automatically, visibly.
+	When string `yaml:"when,omitempty"`
 }
 
 // Runbook is the definition file.
@@ -48,6 +79,7 @@ type Runbook struct {
 	Title   string `yaml:"title"`
 	Slug    string `yaml:"slug"`
 	Created string `yaml:"created"`
+	Target  string `yaml:"target,omitempty"`
 	Steps   []Step `yaml:"steps"`
 	// Path is where it was loaded from. Not serialised.
 	Path string `yaml:"-"`
@@ -58,12 +90,19 @@ func path(p *project.Project, slug string) string {
 }
 
 // New writes an empty runbook definition.
-func New(p *project.Project, title string) (*Runbook, error) {
+func New(p *project.Project, title, target string) (*Runbook, error) {
 	slug := project.Slugify(title)
 	if slug == "" {
 		return nil, fmt.Errorf("title %q produces an empty slug", title)
 	}
-	rb := &Runbook{Title: title, Slug: slug, Created: time.Now().Format("2006-01-02"), Path: path(p, slug)}
+	target = strings.ToLower(strings.TrimSpace(target))
+	if target == "" {
+		target = "none"
+	}
+	if !contains(Targets, target) {
+		return nil, fmt.Errorf("target %q; one of %s", target, strings.Join(Targets, ", "))
+	}
+	rb := &Runbook{Title: title, Slug: slug, Created: time.Now().Format("2006-01-02"), Target: target, Path: path(p, slug)}
 	if _, err := os.Stat(rb.Path); err == nil {
 		return nil, fmt.Errorf("runbook--%s.yaml already exists", slug)
 	}
@@ -87,6 +126,9 @@ func Load(p *project.Project, slug string) (*Runbook, error) {
 	if rb.Slug == "" {
 		rb.Slug = slug
 	}
+	if rb.Target == "" {
+		rb.Target = "none"
+	}
 	return &rb, nil
 }
 
@@ -105,8 +147,17 @@ func All(p *project.Project) ([]*Runbook, error) {
 	return out, nil
 }
 
-// AddStep appends a step after validating kind and check.
-func (rb *Runbook) AddStep(kind, text, check string) error {
+// SplitCheck parses "card:Testing" into check and arg.
+func SplitCheck(s string) (check, arg string) {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, ':'); i >= 0 {
+		return strings.ToLower(strings.TrimSpace(s[:i])), strings.TrimSpace(s[i+1:])
+	}
+	return strings.ToLower(s), ""
+}
+
+// AddStep appends a step after validating kind, check, argument and when.
+func (rb *Runbook) AddStep(kind, text, check, arg, name, when string) error {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	if !contains(Kinds, kind) {
 		return fmt.Errorf("kind %q; one of %s", kind, strings.Join(Kinds, ", "))
@@ -115,7 +166,12 @@ func (rb *Runbook) AddStep(kind, text, check string) error {
 	if text == "" {
 		return fmt.Errorf("step text is empty")
 	}
-	check = strings.ToLower(strings.TrimSpace(check))
+	if c, a := SplitCheck(check); a != "" {
+		check, arg = c, a
+	} else {
+		check = c
+	}
+	arg = strings.TrimSpace(arg)
 	if check != "" && !contains(Checks[kind], check) {
 		allowed := Checks[kind]
 		if len(allowed) == 0 {
@@ -123,8 +179,60 @@ func (rb *Runbook) AddStep(kind, text, check string) error {
 		}
 		return fmt.Errorf("check %q for kind %s; one of %s", check, kind, strings.Join(allowed, ", "))
 	}
-	rb.Steps = append(rb.Steps, Step{Kind: kind, Text: text, Check: check})
+	if kind == "gate" && check == "" {
+		return fmt.Errorf("a gate needs a check to wait on: %s", strings.Join(Checks["gate"], ", "))
+	}
+	if check == "card" && rb.Target != "card" {
+		return fmt.Errorf("check card needs a runbook with target card (this one is %s)", rb.Target)
+	}
+	if kind == "gate" && check == "card" && arg == "" {
+		return fmt.Errorf("gate card needs a state: card:<State>")
+	}
+	if check == "merged" && arg == "" {
+		arg = "main"
+	}
+	if arg != "" && check != "card" && check != "merged" {
+		return fmt.Errorf("check %s takes no argument", check)
+	}
+	name = strings.TrimSpace(name)
+	if name != "" {
+		if project.Slugify(name) != name {
+			return fmt.Errorf("name %q: lowercase letters, digits and dashes", name)
+		}
+		for _, s := range rb.Steps {
+			if s.Name == name {
+				return fmt.Errorf("name %q is already used", name)
+			}
+		}
+	}
+	when = strings.TrimSpace(when)
+	if when != "" {
+		ref, _, _, err := parseWhen(when)
+		if err != nil {
+			return err
+		}
+		found := false
+		for _, s := range rb.Steps {
+			if s.Name == ref {
+				found = true
+			}
+		}
+		if !found {
+			return fmt.Errorf("when refers to %q; no earlier step has that name", ref)
+		}
+	}
+	rb.Steps = append(rb.Steps, Step{Kind: kind, Text: text, Check: check, Arg: arg, Name: name, When: when})
 	return rb.save()
+}
+
+func parseWhen(w string) (name, op, value string, err error) {
+	if i := strings.Index(w, "!="); i > 0 {
+		return strings.TrimSpace(w[:i]), "!=", strings.TrimSpace(w[i+2:]), nil
+	}
+	if i := strings.IndexByte(w, '='); i > 0 {
+		return strings.TrimSpace(w[:i]), "=", strings.TrimSpace(w[i+1:]), nil
+	}
+	return "", "", "", fmt.Errorf("when %q: want <name>=<value> or <name>!=<value>", w)
 }
 
 func (rb *Runbook) save() error {
@@ -136,11 +244,16 @@ func (rb *Runbook) save() error {
 	return os.WriteFile(rb.Path, append([]byte(header), out...), 0o644)
 }
 
+// ------------------------------------------------------------------- run
+
 // Run is one execution of a runbook.
 type Run struct {
 	ID        string
 	Runbook   string
 	Target    string
+	CardKey   string
+	CardID    string
+	Branch    string
 	Agent     string
 	StartedAt time.Time
 	EndedAt   time.Time
@@ -150,15 +263,19 @@ type Run struct {
 
 // RunStep is a step copied into a run, with its outcome.
 type RunStep struct {
-	Idx      int
-	Kind     string
-	Text     string
-	Check    string
-	State    string // pending | current | done | verified | skipped
-	Evidence string
-	DoneAt   time.Time
-	Reason   string
-	DeskItem string
+	Idx       int
+	Kind      string
+	Text      string
+	Check     string
+	Arg       string
+	Name      string
+	When      string
+	State     string // pending | current | done | verified | skipped
+	Evidence  string
+	StartedAt time.Time
+	DoneAt    time.Time
+	Reason    string
+	DeskItem  string
 }
 
 func (r *Run) Short() string { return r.ID[:8] }
@@ -173,8 +290,30 @@ func (r *Run) Current() *RunStep {
 	return nil
 }
 
-// Start creates a run from a runbook, copies its steps, and places the first
-// step on the agent's desk as a work item.
+// Label is how a step's check reads: "card:Testing".
+func (s RunStep) Label() string {
+	if s.Arg != "" {
+		return s.Check + ":" + s.Arg
+	}
+	return s.Check
+}
+
+// ActiveFor returns the agent's active run, if any.
+func ActiveFor(p *project.Project, agent string) (*Run, error) {
+	runs, err := Active(p)
+	if err != nil {
+		return nil, err
+	}
+	for i := range runs {
+		if runs[i].Agent == agent {
+			return &runs[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// Start creates a run from a runbook, binds it to its card, copies the
+// steps, and places the first step on the agent's desk as a work item.
 func Start(p *project.Project, slug, target, agent string) (*Run, error) {
 	rb, err := Load(p, slug)
 	if err != nil {
@@ -186,34 +325,136 @@ func Start(p *project.Project, slug, target, agent string) (*Run, error) {
 	if agent == "" {
 		agent = session.DefaultAgent()
 	}
+	if mine, err := ActiveFor(p, agent); err != nil {
+		return nil, err
+	} else if mine != nil {
+		return nil, fmt.Errorf("%s already has an active run %s (%s); finish or abandon it first", agent, mine.Short(), mine.Runbook)
+	}
+	target = strings.TrimSpace(target)
+	cardKey, cardID := "", ""
+	if rb.Target == "card" {
+		if target == "" {
+			return nil, fmt.Errorf("runbook %s runs against a card; pass its key as the target", slug)
+		}
+		cd, err := card.Get(p, target)
+		if err != nil {
+			return nil, err
+		}
+		if cd.CompletedAt.After(time.Time{}) {
+			return nil, fmt.Errorf("%s is completed", cd.Key)
+		}
+		if id, who := card.ActiveRun(p, cd.ID); id != "" {
+			return nil, fmt.Errorf("%s already has an active run %s by %s", cd.Key, id[:8], who)
+		}
+		cardKey, cardID, target = cd.Key, cd.ID, cd.Key
+	} else if rb.Target == "repo" && !gitx.IsRepo(p.Root) {
+		return nil, fmt.Errorf("runbook %s runs against a repository; %s is not one", slug, p.Root)
+	}
+
 	db, err := store.Open(p)
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
-
-	r := &Run{ID: project.NewID(), Runbook: slug, Target: target, Agent: agent, Status: "active"}
+	r := &Run{ID: project.NewID(), Runbook: slug, Target: target, CardKey: cardKey, CardID: cardID, Agent: agent, Status: "active"}
 	now := store.Now()
-	if _, err := db.Exec(`INSERT INTO runs (id, runbook, target, agent, started_at, status) VALUES (?, ?, ?, ?, ?, 'active')`,
-		r.ID, r.Runbook, r.Target, r.Agent, now); err != nil {
+	if _, err := db.Exec(`INSERT INTO runs (id, runbook, target, card_id, branch, agent, started_at, status) VALUES (?, ?, ?, ?, '', ?, ?, 'active')`,
+		r.ID, r.Runbook, r.Target, r.CardID, r.Agent, now); err != nil {
+		db.Close()
 		return nil, err
 	}
-	r.StartedAt = store.Parse(now)
 	for i, s := range rb.Steps {
-		state := "pending"
-		if i == 0 {
-			state = "current"
-		}
-		if _, err := db.Exec(`INSERT INTO run_steps (run_id, idx, kind, text, "check", state) VALUES (?, ?, ?, ?, ?, ?)`,
-			r.ID, i+1, s.Kind, s.Text, s.Check, state); err != nil {
+		if _, err := db.Exec(`INSERT INTO run_steps (run_id, idx, kind, text, "check", arg, name, when_cond, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+			r.ID, i+1, s.Kind, s.Text, s.Check, s.Arg, s.Name, s.When); err != nil {
+			db.Close()
 			return nil, err
 		}
 	}
 	db.Close()
-	if err := placeOnDesk(p, r.ID, 1, agent); err != nil {
+	if cardID != "" {
+		if _, err := card.Update(p, cardID, card.Patch{Assignee: &agent}, agent); err != nil {
+			return nil, err
+		}
+		_ = card.Note(p, cardID, agent, "run", "started "+slug+" ("+r.ID[:8]+")")
+	}
+	if _, err := advance(p, r.ID, 0, agent); err != nil {
 		return nil, err
 	}
 	return Get(p, r.ID)
+}
+
+// advance makes the step after idx current, skipping steps whose when:
+// does not hold, and places the current step on the desk. It returns true
+// when the run finished instead.
+func advance(p *project.Project, runID string, idx int, agent string) (bool, error) {
+	for {
+		r, err := Get(p, runID)
+		if err != nil {
+			return false, err
+		}
+		next := idx + 1
+		if next > len(r.Steps) {
+			return true, finish(p, r)
+		}
+		st := r.Steps[next-1]
+		if st.When != "" && !holds(r, st.When) {
+			db, err := store.Open(p)
+			if err != nil {
+				return false, err
+			}
+			_, err = db.Exec(`UPDATE run_steps SET state = 'skipped', reason = ?, done_at = ? WHERE run_id = ? AND idx = ?`,
+				"when "+st.When+" did not hold", store.Now(), runID, next)
+			db.Close()
+			if err != nil {
+				return false, err
+			}
+			idx = next
+			continue
+		}
+		db, err := store.Open(p)
+		if err != nil {
+			return false, err
+		}
+		_, err = db.Exec(`UPDATE run_steps SET state = 'current', started_at = ? WHERE run_id = ? AND idx = ?`, store.Now(), runID, next)
+		db.Close()
+		if err != nil {
+			return false, err
+		}
+		return false, placeOnDesk(p, runID, next, agent)
+	}
+}
+
+func holds(r *Run, when string) bool {
+	name, op, value, err := parseWhen(when)
+	if err != nil {
+		return true
+	}
+	got := ""
+	for _, s := range r.Steps {
+		if s.Name == name {
+			got = s.Evidence
+		}
+	}
+	eq := strings.EqualFold(strings.TrimSpace(got), value)
+	if op == "!=" {
+		return !eq
+	}
+	return eq
+}
+
+func finish(p *project.Project, r *Run) error {
+	db, err := store.Open(p)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`UPDATE runs SET status = 'completed', ended_at = ? WHERE id = ?`, store.Now(), r.ID)
+	db.Close()
+	if err != nil {
+		return err
+	}
+	if r.CardID != "" {
+		_ = card.Note(p, r.CardID, r.Agent, "run", "completed "+r.Runbook+" ("+r.Short()+")")
+	}
+	return nil
 }
 
 // placeOnDesk puts step idx on the agent's desk as a work item and records
@@ -234,9 +475,13 @@ func placeOnDesk(p *project.Project, runID string, idx int, agent string) error 
 	}
 	text := fmt.Sprintf("run %s step %d/%d (%s): %s", r.Short(), idx, len(r.Steps), st.Kind, st.Text)
 	if st.Check != "" {
-		text += fmt.Sprintf(" — evidence: %s", st.Check)
+		text += " [" + st.Label() + "]"
 	}
-	item, err := desk.Send(p, "work", "gears", agent, text, "run:"+r.ID)
+	ref := "run:" + r.ID
+	if r.CardKey != "" {
+		ref = r.CardKey
+	}
+	item, err := desk.Send(p, "work", "gears", agent, text, ref)
 	if err != nil {
 		return err
 	}
@@ -273,21 +518,29 @@ func Get(p *project.Project, key string) (*Run, error) {
 // Active returns runs still in progress, oldest first.
 func Active(p *project.Project) ([]Run, error) { return list(p, false) }
 
-// Only returns the single active run, or an error naming the choices.
-func Only(p *project.Project) (*Run, error) {
+// Only returns the agent's active run, else the single active run, else an
+// error naming the choices.
+func Only(p *project.Project, agent string) (*Run, error) {
+	if agent != "" {
+		if mine, err := ActiveFor(p, agent); err != nil {
+			return nil, err
+		} else if mine != nil {
+			return mine, nil
+		}
+	}
 	runs, err := Active(p)
 	if err != nil {
 		return nil, err
 	}
 	switch len(runs) {
 	case 0:
-		return nil, fmt.Errorf("no active run; start one: gears runbook start <slug>")
+		return nil, fmt.Errorf("no active run; start one: gears runbook start <slug> --target <card>")
 	case 1:
 		return &runs[0], nil
 	}
 	var ids []string
 	for _, r := range runs {
-		ids = append(ids, r.Short()+" ("+r.Runbook+")")
+		ids = append(ids, r.Short()+" ("+r.Runbook+", "+r.Agent+")")
 	}
 	return nil, fmt.Errorf("%d active runs; pass --run: %s", len(runs), strings.Join(ids, ", "))
 }
@@ -301,11 +554,12 @@ func list(p *project.Project, all bool) ([]Run, error) {
 		return nil, err
 	}
 	defer db.Close()
-	q := `SELECT id, runbook, target, agent, started_at, ended_at, status FROM runs`
+	q := `SELECT r.id, r.runbook, r.target, r.card_id, COALESCE(c.key, ''), r.branch, r.agent, r.started_at, r.ended_at, r.status
+		FROM runs r LEFT JOIN cards c ON c.id = r.card_id`
 	if !all {
-		q += ` WHERE status = 'active'`
+		q += ` WHERE r.status = 'active'`
 	}
-	q += ` ORDER BY started_at`
+	q += ` ORDER BY r.started_at`
 	rows, err := db.Query(q)
 	if err != nil {
 		return nil, err
@@ -314,7 +568,7 @@ func list(p *project.Project, all bool) ([]Run, error) {
 	for rows.Next() {
 		var r Run
 		var started, ended string
-		if err := rows.Scan(&r.ID, &r.Runbook, &r.Target, &r.Agent, &started, &ended, &r.Status); err != nil {
+		if err := rows.Scan(&r.ID, &r.Runbook, &r.Target, &r.CardID, &r.CardKey, &r.Branch, &r.Agent, &started, &ended, &r.Status); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -326,16 +580,19 @@ func list(p *project.Project, all bool) ([]Run, error) {
 	}
 	rows.Close()
 	for i := range runs {
-		srows, err := db.Query(`SELECT idx, kind, text, "check", state, evidence, done_at, reason, desk_item FROM run_steps WHERE run_id = ? ORDER BY idx`, runs[i].ID)
+		srows, err := db.Query(`SELECT idx, kind, text, "check", arg, name, when_cond, state, evidence, started_at, done_at, reason, desk_item FROM run_steps WHERE run_id = ? ORDER BY idx`, runs[i].ID)
 		if err != nil {
 			return nil, err
 		}
 		for srows.Next() {
 			var s RunStep
-			var done string
-			if err := srows.Scan(&s.Idx, &s.Kind, &s.Text, &s.Check, &s.State, &s.Evidence, &done, &s.Reason, &s.DeskItem); err != nil {
+			var started, done string
+			if err := srows.Scan(&s.Idx, &s.Kind, &s.Text, &s.Check, &s.Arg, &s.Name, &s.When, &s.State, &s.Evidence, &started, &done, &s.Reason, &s.DeskItem); err != nil {
 				srows.Close()
 				return nil, err
+			}
+			if started != "" {
+				s.StartedAt = store.Parse(started)
 			}
 			if done != "" {
 				s.DoneAt = store.Parse(done)
@@ -355,49 +612,66 @@ type Outcome struct {
 	Finished bool // the run completed with this step
 }
 
-// Complete records evidence for the current step, verifies it where the
-// step declares a check, and advances. Verification failure is an error:
-// the step stays current and nothing is stamped.
+func ownerCheck(r *Run, agent string) error {
+	if r.Status != "active" {
+		return fmt.Errorf("run %s is %s", r.Short(), r.Status)
+	}
+	if r.Agent != agent {
+		return fmt.Errorf("run %s belongs to %s; use runbook_takeover with a reason to continue it as %s", r.Short(), r.Agent, agent)
+	}
+	return nil
+}
+
+// Complete performs or verifies the current step with the evidence given
+// and advances. Verification failure is an error: the step stays current
+// and nothing is stamped.
 func Complete(p *project.Project, runID, evidence, agent string) (*Outcome, error) {
+	if agent == "" {
+		agent = session.DefaultAgent()
+	}
 	r, err := Get(p, runID)
 	if err != nil {
 		return nil, err
 	}
-	if r.Status != "active" {
-		return nil, fmt.Errorf("run %s is %s", r.Short(), r.Status)
+	if err := ownerCheck(r, agent); err != nil {
+		return nil, err
 	}
 	st := r.Current()
 	if st == nil {
 		return nil, fmt.Errorf("run %s has no current step", r.Short())
 	}
 	evidence = strings.TrimSpace(evidence)
-	if evidence == "" {
-		return nil, fmt.Errorf("step %d needs evidence; nothing is marked done without it", st.Idx)
-	}
-	if agent == "" {
-		agent = session.DefaultAgent()
-	}
-
-	verified, note, err := verify(p, r, st, evidence)
+	res, err := perform(p, r, st, evidence, agent)
 	if err != nil {
 		return nil, fmt.Errorf("step %d not done: %w", st.Idx, err)
 	}
+	if res.branch != "" && r.Branch == "" {
+		db, err := store.Open(p)
+		if err != nil {
+			return nil, err
+		}
+		_, _ = db.Exec(`UPDATE runs SET branch = ? WHERE id = ?`, res.branch, r.ID)
+		db.Close()
+	}
 	state := "done"
-	if verified {
+	if res.verified {
 		state = "verified"
 	}
-	return finishStep(p, r, st, state, evidence, "", agent, verified, note)
+	return finishStep(p, r, st, state, res.evidence, "", agent, res.verified, res.note)
 }
 
 // Skip marks the current step skipped with a reason and advances. The skip
 // stays visible on the run.
 func Skip(p *project.Project, runID, reason, agent string) (*Outcome, error) {
+	if agent == "" {
+		agent = session.DefaultAgent()
+	}
 	r, err := Get(p, runID)
 	if err != nil {
 		return nil, err
 	}
-	if r.Status != "active" {
-		return nil, fmt.Errorf("run %s is %s", r.Short(), r.Status)
+	if err := ownerCheck(r, agent); err != nil {
+		return nil, err
 	}
 	st := r.Current()
 	if st == nil {
@@ -405,9 +679,6 @@ func Skip(p *project.Project, runID, reason, agent string) (*Outcome, error) {
 	}
 	if strings.TrimSpace(reason) == "" {
 		return nil, fmt.Errorf("a reason is required to skip a step")
-	}
-	if agent == "" {
-		agent = session.DefaultAgent()
 	}
 	return finishStep(p, r, st, "skipped", "", strings.TrimSpace(reason), agent, false, "skipped: "+reason)
 }
@@ -418,41 +689,88 @@ func finishStep(p *project.Project, r *Run, st *RunStep, state, evidence, reason
 		return nil, err
 	}
 	now := store.Now()
-	if _, err := db.Exec(`UPDATE run_steps SET state = ?, evidence = ?, reason = ?, done_at = ? WHERE run_id = ? AND idx = ?`,
-		state, evidence, reason, now, r.ID, st.Idx); err != nil {
-		db.Close()
+	_, err = db.Exec(`UPDATE run_steps SET state = ?, evidence = ?, reason = ?, done_at = ? WHERE run_id = ? AND idx = ?`,
+		state, evidence, reason, now, r.ID, st.Idx)
+	db.Close()
+	if err != nil {
 		return nil, err
 	}
-	next := st.Idx + 1
-	finished := next > len(r.Steps)
-	if finished {
-		_, _ = db.Exec(`UPDATE runs SET status = 'completed', ended_at = ? WHERE id = ?`, now, r.ID)
-	} else {
-		_, _ = db.Exec(`UPDATE run_steps SET state = 'current' WHERE run_id = ? AND idx = ?`, r.ID, next)
-	}
-	db.Close()
-
-	// Close the desk item for this step; place the next.
 	if st.DeskItem != "" {
 		_, _ = desk.Done(p, st.DeskItem, agent)
 	}
-	if !finished {
-		if err := placeOnDesk(p, r.ID, next, r.Agent); err != nil {
-			return nil, err
-		}
+	if r.CardID != "" {
+		_ = card.Note(p, r.CardID, agent, "run", fmt.Sprintf("step %d %s: %s %s", st.Idx, state, st.Text, note))
+	}
+	finished, err := advance(p, r.ID, st.Idx, r.Agent)
+	if err != nil {
+		return nil, err
 	}
 	st.State, st.Evidence, st.Reason, st.DoneAt = state, evidence, reason, store.Parse(now)
 	return &Outcome{Step: *st, Verified: verified, Note: note, Finished: finished}, nil
 }
 
-// Abandon ends a run without completing it and clears its desk item.
-func Abandon(p *project.Project, runID, reason, agent string) (*Run, error) {
+// Takeover moves an active run to another agent, with a reason that lands
+// on the session log and the card. The current step's desk item moves too.
+func Takeover(p *project.Project, runID, agent, reason string) (*Run, error) {
+	if agent == "" {
+		agent = session.DefaultAgent()
+	}
 	r, err := Get(p, runID)
 	if err != nil {
 		return nil, err
 	}
 	if r.Status != "active" {
-		return nil, fmt.Errorf("run %s is already %s", r.Short(), r.Status)
+		return nil, fmt.Errorf("run %s is %s", r.Short(), r.Status)
+	}
+	if r.Agent == agent {
+		return r, nil
+	}
+	if strings.TrimSpace(reason) == "" {
+		return nil, fmt.Errorf("a reason is required to take over a run")
+	}
+	if mine, err := ActiveFor(p, agent); err != nil {
+		return nil, err
+	} else if mine != nil {
+		return nil, fmt.Errorf("%s already has an active run %s; finish or abandon it first", agent, mine.Short())
+	}
+	from := r.Agent
+	db, err := store.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	_, err = db.Exec(`UPDATE runs SET agent = ? WHERE id = ?`, agent, r.ID)
+	db.Close()
+	if err != nil {
+		return nil, err
+	}
+	if st := r.Current(); st != nil {
+		if st.DeskItem != "" {
+			_, _ = desk.Done(p, st.DeskItem, agent)
+		}
+		if err := placeOnDesk(p, r.ID, st.Idx, agent); err != nil {
+			return nil, err
+		}
+	}
+	_, _ = session.Append(p, "decision", agent, fmt.Sprintf("took over run %s (%s) from %s: %s", r.Short(), r.Runbook, from, reason))
+	if r.CardID != "" {
+		_, _ = card.Update(p, r.CardID, card.Patch{Assignee: &agent}, agent)
+		_ = card.Note(p, r.CardID, agent, "run", "taken over from "+from+": "+reason)
+	}
+	return Get(p, r.ID)
+}
+
+// Abandon ends a run without completing it and clears its desk item. The
+// card stays where it is, unlocked.
+func Abandon(p *project.Project, runID, reason, agent string) (*Run, error) {
+	if agent == "" {
+		agent = session.DefaultAgent()
+	}
+	r, err := Get(p, runID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ownerCheck(r, agent); err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(reason) == "" {
 		return nil, fmt.Errorf("a reason is required to abandon a run")
@@ -471,77 +789,194 @@ func Abandon(p *project.Project, runID, reason, agent string) (*Run, error) {
 		_, _ = desk.Done(p, st.DeskItem, agent)
 	}
 	_, _ = session.Append(p, "problem", agent, fmt.Sprintf("abandoned run %s (%s): %s", r.Short(), r.Runbook, reason))
+	if r.CardID != "" {
+		_ = card.Note(p, r.CardID, agent, "run", "abandoned "+r.Runbook+": "+reason)
+	}
 	return Get(p, r.ID)
 }
 
-// verify checks evidence against the step's declared check. Steps without a
-// check accept any evidence and are "done", not "verified".
-func verify(p *project.Project, r *Run, st *RunStep, evidence string) (verified bool, note string, err error) {
-	if st.Check == "" {
-		return false, "recorded", nil
-	}
-	root := p.Root
-	switch st.Check {
-	case "branch":
-		if !gitx.IsRepo(root) {
-			return false, "", fmt.Errorf("%s is not a git repository", root)
-		}
-		if !gitx.BranchExists(root, evidence) {
-			return false, "", fmt.Errorf("branch %q does not exist", evidence)
-		}
-		return true, "branch exists", nil
-	case "commit":
-		if !gitx.IsRepo(root) {
-			return false, "", fmt.Errorf("%s is not a git repository", root)
-		}
-		if !gitx.CommitExists(root, evidence) {
-			return false, "", fmt.Errorf("commit %q not found", evidence)
-		}
-		// If an earlier step produced a branch, the commit must be on it.
-		if br := earlierEvidence(r, "branch"); br != "" && !gitx.CommitOnBranch(root, evidence, br) {
-			return false, "", fmt.Errorf("commit %s is not on branch %s", evidence, br)
-		}
-		return true, "commit exists", nil
-	case "pushed":
-		if !gitx.IsRepo(root) {
-			return false, "", fmt.Errorf("%s is not a git repository", root)
-		}
-		if !gitx.Pushed(root, evidence) {
-			return false, "", fmt.Errorf("origin/%s not found; push the branch first", evidence)
-		}
-		return true, "origin has the branch", nil
-	case "session":
-		id, convErr := strconv.ParseInt(strings.TrimPrefix(evidence, "#"), 10, 64)
-		if convErr != nil || !session.Exists(p, id) {
-			return false, "", fmt.Errorf("session entry %q not found", evidence)
-		}
-		return true, "session entry exists", nil
-	case "desk":
-		if !desk.Exists(p, evidence) {
-			return false, "", fmt.Errorf("desk item %q not found", evidence)
-		}
-		return true, "desk item exists", nil
-	case "card":
-		if !card.Exists(p, evidence) {
-			return false, "", fmt.Errorf("card %q not found", evidence)
-		}
-		return true, "card exists", nil
-	case "artifact":
-		if _, statErr := os.Stat(filepath.Join(p.ArtifactsDir(), evidence)); statErr != nil {
-			return false, "", fmt.Errorf("artifact %q not found", evidence)
-		}
-		return true, "artifact exists", nil
-	}
-	return false, "", fmt.Errorf("unknown check %q", st.Check)
+// --------------------------------------------------------------- perform
+
+type result struct {
+	verified bool
+	note     string
+	evidence string
+	branch   string // learned from a branch step
 }
 
-func earlierEvidence(r *Run, check string) string {
-	for _, s := range r.Steps {
-		if s.Check == check && (s.State == "verified" || s.State == "done") {
-			return s.Evidence
+// perform is the step. ask records; gears acts; git, do and gate verify.
+// Each check is bound to the run: its branch, its card, when the step began.
+func perform(p *project.Project, r *Run, st *RunStep, evidence, agent string) (*result, error) {
+	root := p.Root
+	needRepo := func() error {
+		if !gitx.IsRepo(root) {
+			return fmt.Errorf("%s is not a git repository", root)
 		}
+		return nil
 	}
-	return ""
+	if st.Check == "" {
+		if evidence == "" {
+			return nil, fmt.Errorf("say what happened; nothing is marked done without a note")
+		}
+		if st.Kind == "ask" {
+			return &result{note: "answered", evidence: evidence}, nil
+		}
+		return &result{note: "recorded", evidence: evidence}, nil
+	}
+	switch st.Check {
+	case "branch":
+		if err := needRepo(); err != nil {
+			return nil, err
+		}
+		if evidence == "" {
+			evidence = gitx.CurrentBranch(root)
+		}
+		if !gitx.BranchExists(root, evidence) {
+			return nil, fmt.Errorf("branch %q does not exist", evidence)
+		}
+		if r.Branch != "" && r.Branch != evidence {
+			return nil, fmt.Errorf("this run is bound to branch %s", r.Branch)
+		}
+		if r.CardKey != "" && !strings.Contains(strings.ToLower(evidence), strings.ToLower(r.CardKey)) {
+			return nil, fmt.Errorf("branch %q does not name the card %s", evidence, r.CardKey)
+		}
+		return &result{verified: true, note: "branch exists", evidence: evidence, branch: evidence}, nil
+	case "commit":
+		if err := needRepo(); err != nil {
+			return nil, err
+		}
+		if evidence == "" {
+			evidence = "HEAD"
+		}
+		sha := gitx.Resolve(root, evidence)
+		if sha == "" {
+			return nil, fmt.Errorf("commit %q not found", evidence)
+		}
+		if r.Branch != "" && !gitx.CommitOnBranch(root, sha, r.Branch) {
+			return nil, fmt.Errorf("commit %s is not on the run's branch %s", sha[:8], r.Branch)
+		}
+		if t, ok := gitx.CommitTime(root, sha); ok && t.Before(r.StartedAt) {
+			return nil, fmt.Errorf("commit %s predates this run (%s)", sha[:8], t.Local().Format("15:04"))
+		}
+		return &result{verified: true, note: "commit on " + orAny(r.Branch) + " after run start", evidence: sha[:12]}, nil
+	case "clean":
+		if err := needRepo(); err != nil {
+			return nil, err
+		}
+		if !gitx.Clean(root) {
+			return nil, fmt.Errorf("working tree has uncommitted changes")
+		}
+		return &result{verified: true, note: "working tree clean", evidence: "clean"}, nil
+	case "pushed":
+		if err := needRepo(); err != nil {
+			return nil, err
+		}
+		br := r.Branch
+		if br == "" {
+			br = evidence
+		}
+		if br == "" {
+			return nil, fmt.Errorf("no branch bound to this run; give the branch name")
+		}
+		if !gitx.Pushed(root, br) {
+			return nil, fmt.Errorf("origin/%s is missing or behind; push the branch", br)
+		}
+		return &result{verified: true, note: "origin has every commit of " + br, evidence: br}, nil
+	case "merged":
+		if err := needRepo(); err != nil {
+			return nil, err
+		}
+		br := r.Branch
+		if br == "" {
+			br = evidence
+		}
+		if br == "" {
+			return nil, fmt.Errorf("no branch bound to this run; give the branch name")
+		}
+		if !gitx.Merged(root, br, st.Arg) {
+			return nil, fmt.Errorf("%s is not merged into %s", br, st.Arg)
+		}
+		return &result{verified: true, note: br + " merged into " + st.Arg, evidence: br}, nil
+	case "session":
+		if evidence == "" {
+			return nil, fmt.Errorf("give the text to log")
+		}
+		if id, err := strconv.ParseInt(strings.TrimPrefix(evidence, "#"), 10, 64); err == nil {
+			e, err := session.Find(p, id)
+			if err != nil {
+				return nil, err
+			}
+			if e.Agent != r.Agent {
+				return nil, fmt.Errorf("session entry #%d was written by %s, not this run's agent", id, e.Agent)
+			}
+			if e.At.Before(st.StartedAt) {
+				return nil, fmt.Errorf("session entry #%d predates this step", id)
+			}
+			return &result{verified: true, note: "session entry exists", evidence: "#" + strconv.FormatInt(id, 10)}, nil
+		}
+		e, err := session.Append(p, "done", agent, evidence)
+		if err != nil {
+			return nil, err
+		}
+		return &result{verified: true, note: "logged session entry", evidence: "#" + strconv.FormatInt(e.ID, 10)}, nil
+	case "desk":
+		if evidence == "" {
+			return nil, fmt.Errorf("give the desk item id")
+		}
+		it, err := desk.Get(p, evidence)
+		if err != nil {
+			return nil, err
+		}
+		if it.CreatedAt.Before(st.StartedAt) && st.Kind != "gate" {
+			return nil, fmt.Errorf("desk item %s predates this step", it.Short())
+		}
+		if st.Kind == "gate" && it.State != "closed" {
+			return nil, fmt.Errorf("waiting: desk item %s (%s) is still open", it.Short(), it.Type)
+		}
+		return &result{verified: true, note: "desk item " + it.Type + " " + it.State, evidence: it.ID}, nil
+	case "artifact":
+		if evidence == "" {
+			return nil, fmt.Errorf("give the artifact file name")
+		}
+		a, err := artifact.Find(p, evidence)
+		if err != nil {
+			return nil, err
+		}
+		if !a.FilePresent {
+			return nil, fmt.Errorf("artifact %s has no file", a.File)
+		}
+		if errs := artifact.Validate(p, *a); len(errs) > 0 {
+			return nil, fmt.Errorf("artifact %s fails its shape: %s", a.File, strings.Join(errs, "; "))
+		}
+		return &result{verified: true, note: "artifact passes its shape", evidence: a.File}, nil
+	case "card":
+		if r.CardID == "" {
+			return nil, fmt.Errorf("this run has no card")
+		}
+		if st.Kind == "gears" && st.Arg != "" {
+			cd, _, err := card.MoveForRun(p, r.CardID, st.Arg, agent)
+			if err != nil {
+				return nil, err
+			}
+			return &result{verified: true, note: "card moved to " + cd.State, evidence: cd.Key + " in " + cd.State}, nil
+		}
+		cd, err := card.Get(p, r.CardID)
+		if err != nil {
+			return nil, err
+		}
+		if st.Arg != "" && !strings.EqualFold(cd.State, st.Arg) {
+			return nil, fmt.Errorf("waiting: %s is in %s, not %s", cd.Key, cd.State, st.Arg)
+		}
+		return &result{verified: true, note: cd.Key + " in " + cd.State, evidence: cd.Key + " in " + cd.State}, nil
+	}
+	return nil, fmt.Errorf("unknown check %q", st.Check)
+}
+
+func orAny(s string) string {
+	if s == "" {
+		return "any branch"
+	}
+	return s
 }
 
 func contains(list []string, s string) bool {

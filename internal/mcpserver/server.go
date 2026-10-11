@@ -55,14 +55,15 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 
 	add(s, c, "export", "Dump the local record (every table, every row) as JSON, or to a file with out. The record is not committed; this is its backup until sync exists.", verbs.Export)
 
-	add(s, c, "runbook_list", "Runbooks in this project and the active runs.", verbs.RunbookList)
-	add(s, c, "runbook_show", "A runbook's steps, or a run's progress with evidence and verification per step.", verbs.RunbookShow)
-	add(s, c, "runbook_new", "Create an empty runbook. The only way to author one; add steps with runbook_step_add.", verbs.RunbookNew)
-	add(s, c, "runbook_step_add", "Append a step. Kinds: ask, do, gears, git, gate. Checks by kind: do=commit; gears=session|desk|artifact|card; git=branch|commit|pushed.", verbs.RunbookStepAdd)
-	add(s, c, "runbook_start", "Start a run of a runbook. Step 1 lands on this agent's desk as a work item.", verbs.RunbookStart)
-	add(s, c, "runbook_step_done", "Complete the current step with evidence. Evidence naming a branch, commit, remote ref, session entry, desk item or artifact is verified against the real thing; failure is an error and the step stays current. Steps with no check are recorded as done, not verified.", verbs.RunStepDone)
-	add(s, c, "runbook_skip", "Skip the current step with a reason. The skip stays visible on the run.", verbs.RunSkip)
-	add(s, c, "runbook_abandon", "End a run without completing it. Reason required; logged to the session as a problem.", verbs.RunAbandon)
+	add(s, c, "runbook_list", "Runbooks in this project, the active runs, the step vocabulary and the rules (one run per agent; owner advances; a run owns its card; evidence is Gears or git objects only).", verbs.RunbookList)
+	add(s, c, "runbook_show", "A runbook's steps, or a run's progress: card, branch, evidence and verification per step.", verbs.RunbookShow)
+	add(s, c, "runbook_new", "Create an empty runbook with a target (card | repo | none). The only way to author one; add steps with runbook_step_add.", verbs.RunbookNew)
+	add(s, c, "runbook_step_add", "Append a step. Kinds: ask, do, gears, git, gate. Checks bind to the run: do=commit|clean; gears=session|desk|artifact|card:<State> (moves the card); git=branch|commit|pushed|merged:<base>|clean; gate=pushed|merged:<base>|card:<State>|desk. name a step so a later when:<name>=<value> can skip on its answer.", verbs.RunbookStepAdd)
+	add(s, c, "runbook_start", "Start a run. For a card runbook, pass the card key: the card is assigned to you and owned by the run. Refused if you already have an active run or the card has one. Step 1 lands on your desk.", verbs.RunbookStart)
+	add(s, c, "runbook_step_done", "Perform or verify the current step and advance. gears steps act (log the session entry, move the card); git, do and gate steps verify against the run's branch, card and start time; ask records the answer. Failure is an error and the step stays current. Only the run's agent may call this.", verbs.RunStepDone)
+	add(s, c, "runbook_skip", "Skip the current step with a reason. The skip stays visible on the run. Only the run's agent may call this.", verbs.RunSkip)
+	add(s, c, "runbook_takeover", "Take another agent's active run, with a reason. Logged to the session and the card; its desk item moves to you.", verbs.RunTakeover)
+	add(s, c, "runbook_abandon", "End a run without completing it. Reason required; logged to the session as a problem. The card is released where it stands.", verbs.RunAbandon)
 
 	return s
 }

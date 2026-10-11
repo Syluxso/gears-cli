@@ -53,6 +53,14 @@ var columns = []struct{ table, column, def string }{
 	{"cards", "parent_id", "TEXT NOT NULL DEFAULT ''"},
 	{"cards", "due_at", "TEXT NOT NULL DEFAULT ''"},
 	{"cards", "estimate_minutes", "INTEGER NOT NULL DEFAULT 0"},
+	// Runbooks v2: a run binds to a card and a branch; steps know when they
+	// started, carry an argument, a name and a when: condition.
+	{"runs", "card_id", "TEXT NOT NULL DEFAULT ''"},
+	{"runs", "branch", "TEXT NOT NULL DEFAULT ''"},
+	{"run_steps", "started_at", "TEXT NOT NULL DEFAULT ''"},
+	{"run_steps", "arg", "TEXT NOT NULL DEFAULT ''"},
+	{"run_steps", "name", "TEXT NOT NULL DEFAULT ''"},
+	{"run_steps", "when_cond", "TEXT NOT NULL DEFAULT ''"},
 }
 
 func addColumns(db *sql.DB) error {

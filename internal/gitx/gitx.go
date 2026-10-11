@@ -7,6 +7,7 @@ package gitx
 import (
 	"os/exec"
 	"strings"
+	"time"
 )
 
 func run(dir string, args ...string) (string, bool) {
@@ -37,6 +38,22 @@ func CommitExists(dir, rev string) bool {
 	return ok
 }
 
+// Resolve returns the full sha for a revision, or "".
+func Resolve(dir, rev string) string {
+	out, _ := run(dir, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	return out
+}
+
+// CommitTime returns the committer time of a revision.
+func CommitTime(dir, rev string) (time.Time, bool) {
+	out, ok := run(dir, "show", "-s", "--format=%cI", rev)
+	if !ok {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, out)
+	return t, err == nil
+}
+
 // CommitOnBranch reports whether the commit is reachable from the branch.
 func CommitOnBranch(dir, rev, branch string) bool {
 	out, ok := run(dir, "branch", "--contains", rev, "--format=%(refname:short)")
@@ -51,11 +68,37 @@ func CommitOnBranch(dir, rev, branch string) bool {
 	return false
 }
 
-// Pushed reports whether the branch has a remote-tracking ref on origin,
-// which git updates on a successful push. No network call is made.
+// Ancestor reports whether a is reachable from b (a is an ancestor of, or
+// equal to, b).
+func Ancestor(dir, a, b string) bool {
+	c := exec.Command("git", "merge-base", "--is-ancestor", a, b)
+	c.Dir = dir
+	return c.Run() == nil
+}
+
+// Pushed reports whether origin has the branch and it includes every local
+// commit on it. No network call is made; the remote-tracking ref is what
+// git updated on the last successful push or fetch.
 func Pushed(dir, branch string) bool {
-	_, ok := run(dir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+branch)
-	return ok
+	if _, ok := run(dir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+branch); !ok {
+		return false
+	}
+	return Ancestor(dir, "refs/heads/"+branch, "refs/remotes/origin/"+branch)
+}
+
+// Merged reports whether branch is fully contained in base (local base, or
+// origin/base when the local one is missing).
+func Merged(dir, branch, base string) bool {
+	if BranchExists(dir, base) && Ancestor(dir, "refs/heads/"+branch, "refs/heads/"+base) {
+		return true
+	}
+	return Ancestor(dir, "refs/heads/"+branch, "refs/remotes/origin/"+base)
+}
+
+// Clean reports whether the working tree has no uncommitted changes.
+func Clean(dir string) bool {
+	out, ok := run(dir, "status", "--porcelain")
+	return ok && out == ""
 }
 
 // CurrentBranch returns the checked-out branch name, or "".

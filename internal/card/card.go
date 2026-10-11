@@ -739,6 +739,7 @@ func Exists(p *project.Project, key string) bool {
 // Full is a card with everything hanging off it.
 type Full struct {
 	Card
+	Run        *RunRef
 	Comments   []Comment
 	Links      []Link
 	Checklists []Checklist
@@ -760,7 +761,7 @@ func Show(p *project.Project, key string) (*Full, error) {
 	if err != nil {
 		return nil, err
 	}
-	f := &Full{Card: *c}
+	f := &Full{Card: *c, Run: runRef(db, c.ID)}
 	if f.Comments, err = comments(db, c); err != nil {
 		return nil, err
 	}
@@ -956,11 +957,69 @@ func orDash(s string) string {
 	return s
 }
 
+// ActiveRun returns the id and agent of the run that currently owns a card,
+// or empty strings. The runs table is written by package runbook; reading
+// it here keeps the lock in one place without an import cycle.
+func ActiveRun(p *project.Project, cardID string) (runID, agent string) {
+	if !store.Exists(p) {
+		return "", ""
+	}
+	db, err := store.Open(p)
+	if err != nil {
+		return "", ""
+	}
+	defer db.Close()
+	return activeRun(db, cardID)
+}
+
+func activeRun(db *sql.DB, cardID string) (runID, agent string) {
+	_ = db.QueryRow(`SELECT id, agent FROM runs WHERE card_id = ? AND status = 'active' ORDER BY started_at DESC LIMIT 1`, cardID).Scan(&runID, &agent)
+	return runID, agent
+}
+
+// RunRef is the active run shown on a card.
+type RunRef struct {
+	ID      string
+	Runbook string
+	Agent   string
+	Step    string
+}
+
+func runRef(db *sql.DB, cardID string) *RunRef {
+	var ref RunRef
+	err := db.QueryRow(`SELECT r.id, r.runbook, r.agent, COALESCE((SELECT s.idx || '/' || (SELECT COUNT(*) FROM run_steps WHERE run_id = r.id) || ' ' || s.text FROM run_steps s WHERE s.run_id = r.id AND s.state = 'current'), '')
+		FROM runs r WHERE r.card_id = ? AND r.status = 'active' ORDER BY r.started_at DESC LIMIT 1`, cardID).Scan(&ref.ID, &ref.Runbook, &ref.Agent, &ref.Step)
+	if err != nil {
+		return nil
+	}
+	return &ref
+}
+
+// Note appends a line to a card's activity from outside the package (runs).
+func Note(p *project.Project, cardID, agent, kind, detail string) error {
+	db, err := store.Open(p)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return logEvent(db, cardID, agentOr(agent), kind, detail)
+}
+
 // Move puts a card in a state at a position: "top", "bottom" (default), or
 // "after:<key>". Entering the terminal state stamps completed_at; leaving it
 // clears the stamp. A WIP limit on the target is a warning in the event,
-// not a refusal: agents should see it, humans decide.
+// not a refusal: agents should see it, humans decide. A card with an active
+// run is refused: the run drives it.
 func Move(p *project.Project, key, state, position, agent string) (*Card, string, error) {
+	return move(p, key, state, position, agent, false)
+}
+
+// MoveForRun is Move for the run that owns the card.
+func MoveForRun(p *project.Project, key, state, agent string) (*Card, string, error) {
+	return move(p, key, state, "bottom", agent, true)
+}
+
+func move(p *project.Project, key, state, position, agent string, byRun bool) (*Card, string, error) {
 	agent = agentOr(agent)
 	db, err := store.Open(p)
 	if err != nil {
@@ -970,6 +1029,11 @@ func Move(p *project.Project, key, state, position, agent string) (*Card, string
 	c, err := get(db, p, key)
 	if err != nil {
 		return nil, "", err
+	}
+	if !byRun {
+		if id, who := activeRun(db, c.ID); id != "" {
+			return nil, "", fmt.Errorf("%s is driven by run %s (%s); the runbook's steps move it, or abandon the run", c.Key, id[:8], who)
+		}
 	}
 	sts, err := states(db)
 	if err != nil {
@@ -1048,6 +1112,9 @@ func Move(p *project.Project, key, state, position, agent string) (*Card, string
 // the default one, unless it is already past it. One verb for "I'm on it".
 func Claim(p *project.Project, key, agent string) (*Card, string, error) {
 	agent = agentOr(agent)
+	if err := claimable(p, key, agent); err != nil {
+		return nil, "", err
+	}
 	c, err := Update(p, key, Patch{Assignee: &agent}, agent)
 	if err != nil {
 		return nil, "", err
@@ -1071,6 +1138,18 @@ func Claim(p *project.Project, key, agent string) (*Card, string, error) {
 	return Move(p, c.Key, sts[defIdx+1].Name, "bottom", agent)
 }
 
+// claimable refuses a claim on a card another agent's run owns.
+func claimable(p *project.Project, key, agent string) error {
+	c, err := Get(p, key)
+	if err != nil {
+		return err
+	}
+	if id, who := ActiveRun(p, c.ID); id != "" && who != agent {
+		return fmt.Errorf("%s is driven by run %s (%s)", c.Key, id[:8], who)
+	}
+	return nil
+}
+
 // Delete soft-deletes a card. The number is never reused; children are
 // detached, not deleted.
 func Delete(p *project.Project, key, agent string) (*Card, error) {
@@ -1083,6 +1162,9 @@ func Delete(p *project.Project, key, agent string) (*Card, error) {
 	c, err := get(db, p, key)
 	if err != nil {
 		return nil, err
+	}
+	if id, who := activeRun(db, c.ID); id != "" {
+		return nil, fmt.Errorf("%s is driven by run %s (%s); abandon the run first", c.Key, id[:8], who)
 	}
 	now := store.Now()
 	tx, err := db.Begin()
