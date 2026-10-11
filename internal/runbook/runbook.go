@@ -158,70 +158,11 @@ func SplitCheck(s string) (check, arg string) {
 
 // AddStep appends a step after validating kind, check, argument and when.
 func (rb *Runbook) AddStep(kind, text, check, arg, name, when string) error {
-	kind = strings.ToLower(strings.TrimSpace(kind))
-	if !contains(Kinds, kind) {
-		return fmt.Errorf("kind %q; one of %s", kind, strings.Join(Kinds, ", "))
+	s, err := rb.validateStep(Step{Kind: kind, Text: text, Check: check, Arg: arg, Name: name, When: when}, len(rb.Steps))
+	if err != nil {
+		return err
 	}
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return fmt.Errorf("step text is empty")
-	}
-	if c, a := SplitCheck(check); a != "" {
-		check, arg = c, a
-	} else {
-		check = c
-	}
-	arg = strings.TrimSpace(arg)
-	if check != "" && !contains(Checks[kind], check) {
-		allowed := Checks[kind]
-		if len(allowed) == 0 {
-			return fmt.Errorf("kind %s takes no check", kind)
-		}
-		return fmt.Errorf("check %q for kind %s; one of %s", check, kind, strings.Join(allowed, ", "))
-	}
-	if kind == "gate" && check == "" {
-		return fmt.Errorf("a gate needs a check to wait on: %s", strings.Join(Checks["gate"], ", "))
-	}
-	if check == "card" && rb.Target != "card" {
-		return fmt.Errorf("check card needs a runbook with target card (this one is %s)", rb.Target)
-	}
-	if kind == "gate" && check == "card" && arg == "" {
-		return fmt.Errorf("gate card needs a state: card:<State>")
-	}
-	if check == "merged" && arg == "" {
-		arg = "main"
-	}
-	if arg != "" && check != "card" && check != "merged" {
-		return fmt.Errorf("check %s takes no argument", check)
-	}
-	name = strings.TrimSpace(name)
-	if name != "" {
-		if project.Slugify(name) != name {
-			return fmt.Errorf("name %q: lowercase letters, digits and dashes", name)
-		}
-		for _, s := range rb.Steps {
-			if s.Name == name {
-				return fmt.Errorf("name %q is already used", name)
-			}
-		}
-	}
-	when = strings.TrimSpace(when)
-	if when != "" {
-		ref, _, _, err := parseWhen(when)
-		if err != nil {
-			return err
-		}
-		found := false
-		for _, s := range rb.Steps {
-			if s.Name == ref {
-				found = true
-			}
-		}
-		if !found {
-			return fmt.Errorf("when refers to %q; no earlier step has that name", ref)
-		}
-	}
-	rb.Steps = append(rb.Steps, Step{Kind: kind, Text: text, Check: check, Arg: arg, Name: name, When: when})
+	rb.Steps = append(rb.Steps, s)
 	return rb.save()
 }
 

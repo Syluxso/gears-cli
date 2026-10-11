@@ -661,11 +661,124 @@ func RunbookStepAdd(c Ctx, in RunbookStepAddIn) (*Runbook, error) {
 	return &o, nil
 }
 
+type RunbookStepUpdateIn struct {
+	Runbook string  `json:"runbook" jsonschema:"Runbook slug."`
+	Step    int     `json:"step" jsonschema:"Step number, 1-based (see runbook_show)."`
+	Kind    *string `json:"kind,omitempty" jsonschema:"New kind: ask | do | gears | git | gate. Omit to keep."`
+	Text    *string `json:"text,omitempty" jsonschema:"New text. Omit to keep."`
+	Check   *string `json:"check,omitempty" jsonschema:"New check or check:arg; empty string clears it. Omit to keep."`
+	Name    *string `json:"name,omitempty" jsonschema:"New name; empty string clears it. Refused while a later when: refers to the current name. Omit to keep."`
+	When    *string `json:"when,omitempty" jsonschema:"New condition name=value or name!=value on an earlier step; empty string clears it. Omit to keep."`
+}
+
+// RunbookStepUpdate edits one step in place and revalidates the runbook.
+func RunbookStepUpdate(c Ctx, in RunbookStepUpdateIn) (*Runbook, error) {
+	rb, err := runbook.Load(c.Project, in.Runbook)
+	if err != nil {
+		return nil, err
+	}
+	if err := rb.UpdateStep(c.Project, in.Step, runbook.StepPatch{Kind: in.Kind, Text: in.Text, Check: in.Check, Name: in.Name, When: in.When}); err != nil {
+		return nil, err
+	}
+	o := runbookOut(rb)
+	return &o, nil
+}
+
+type RunbookStepRemoveIn struct {
+	Runbook string `json:"runbook" jsonschema:"Runbook slug."`
+	Step    int    `json:"step" jsonschema:"Step number, 1-based."`
+}
+
+// RunbookStepRemove deletes a step; later steps renumber.
+func RunbookStepRemove(c Ctx, in RunbookStepRemoveIn) (*Runbook, error) {
+	rb, err := runbook.Load(c.Project, in.Runbook)
+	if err != nil {
+		return nil, err
+	}
+	if err := rb.RemoveStep(c.Project, in.Step); err != nil {
+		return nil, err
+	}
+	o := runbookOut(rb)
+	return &o, nil
+}
+
+type RunbookStepMoveIn struct {
+	Runbook string `json:"runbook" jsonschema:"Runbook slug."`
+	Step    int    `json:"step" jsonschema:"Step number to move, 1-based."`
+	To      int    `json:"to" jsonschema:"Position it lands on, 1-based."`
+}
+
+// RunbookStepMove reorders; refused when a when: would precede its step.
+func RunbookStepMove(c Ctx, in RunbookStepMoveIn) (*Runbook, error) {
+	rb, err := runbook.Load(c.Project, in.Runbook)
+	if err != nil {
+		return nil, err
+	}
+	if err := rb.MoveStep(c.Project, in.Step, in.To); err != nil {
+		return nil, err
+	}
+	o := runbookOut(rb)
+	return &o, nil
+}
+
+type RunbookUpdateIn struct {
+	Runbook string `json:"runbook" jsonschema:"Runbook slug. The slug and file name never change."`
+	Title   string `json:"title,omitempty" jsonschema:"New title. Omit to keep."`
+	Target  string `json:"target,omitempty" jsonschema:"New target: card | repo | none. Refused if a step's check needs a card. Omit to keep."`
+}
+
+// RunbookUpdate changes title or target.
+func RunbookUpdate(c Ctx, in RunbookUpdateIn) (*Runbook, error) {
+	rb, err := runbook.Load(c.Project, in.Runbook)
+	if err != nil {
+		return nil, err
+	}
+	if err := rb.Update(c.Project, in.Title, in.Target); err != nil {
+		return nil, err
+	}
+	o := runbookOut(rb)
+	return &o, nil
+}
+
+type RunbookDeleteIn struct {
+	Runbook string `json:"runbook" jsonschema:"Runbook slug."`
+}
+
+type RunbookDeleteOut struct {
+	Slug    string `json:"slug"`
+	Deleted bool   `json:"deleted"`
+}
+
+// RunbookDelete removes the definition file. Past runs keep their copy.
+func RunbookDelete(c Ctx, in RunbookDeleteIn) (*RunbookDeleteOut, error) {
+	if err := runbook.Delete(c.Project, in.Runbook); err != nil {
+		return nil, err
+	}
+	return &RunbookDeleteOut{Slug: in.Runbook, Deleted: true}, nil
+}
+
+type RunbookCopyIn struct {
+	Runbook string `json:"runbook" jsonschema:"Slug to copy. With no from, one of the built-ins listed by runbook_list."`
+	From    string `json:"from,omitempty" jsonschema:"Another project's root directory (its .gears/artifacts/runbook--<slug>.yaml is read). Omit for a built-in."`
+	As      string `json:"as,omitempty" jsonschema:"Title for the copy; its slug is derived. Omit to keep the source slug."`
+}
+
+// RunbookCopy brings a built-in or another project's runbook into this one.
+func RunbookCopy(c Ctx, in RunbookCopyIn) (*Runbook, error) {
+	rb, err := runbook.Copy(c.Project, in.Runbook, in.From, in.As)
+	if err != nil {
+		return nil, err
+	}
+	o := runbookOut(rb)
+	return &o, nil
+}
+
 type RunbookListIn struct{}
 
 type RunbookListOut struct {
 	Runbooks   []Runbook           `json:"runbooks"`
 	Active     []RunSummary        `json:"activeRuns"`
+	Builtins   []string            `json:"builtins"` // shipped runbooks a project may copy
 	Vocabulary map[string][]string `json:"vocabulary"` // kind -> checks
 	Rules      []string            `json:"rules"`
 }
@@ -675,11 +788,12 @@ func RunbookList(c Ctx, _ RunbookListIn) (*RunbookListOut, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := &RunbookListOut{Runbooks: []Runbook{}, Active: []RunSummary{}, Vocabulary: runbook.Checks, Rules: []string{
+	out := &RunbookListOut{Runbooks: []Runbook{}, Active: []RunSummary{}, Builtins: runbook.BuiltinSlugs(), Vocabulary: runbook.Checks, Rules: []string{
 		"One active run per agent.",
 		"Only the agent that started a run advances it; runbook_takeover with a reason moves it.",
 		"A run on a card owns the card's state: card_move is refused, gears card:<State> steps move it.",
 		"Evidence is a Gears or git object checked against the run (its card, its branch, when the step began). No shell commands.",
+		"A runbook with an active run is frozen: step edits, update and delete wait until the run ends.",
 	}}
 	for _, rb := range books {
 		out.Runbooks = append(out.Runbooks, runbookOut(rb))

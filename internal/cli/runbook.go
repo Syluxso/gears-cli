@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -18,6 +19,13 @@ var (
 	rbTarget     string
 	rbRun        string
 	rbReason     string
+	rbTitle      string
+	rbFrom       string
+	rbAs         string
+	rbTo         int
+	rbClearCheck bool
+	rbClearName  bool
+	rbClearWhen  bool
 )
 
 var runbookCmd = &cobra.Command{
@@ -61,7 +69,7 @@ var runbookNewCmd = &cobra.Command{
 	},
 }
 
-var runbookStepCmd = &cobra.Command{Use: "step", Short: "Author or complete steps"}
+var runbookStepCmd = &cobra.Command{Use: "step", Short: "Author (add, update, remove, move) or complete (done) steps"}
 
 var runbookStepAddCmd = &cobra.Command{
 	Use:   "add <slug> <text>",
@@ -106,7 +114,7 @@ var runbookListCmd = &cobra.Command{
 			return nil
 		}
 		if len(out.Runbooks) == 0 {
-			fmt.Println("no runbooks. create one: gears runbook new \"Single ticket development\"")
+			fmt.Printf("no runbooks. copy a built-in (%s): gears runbook copy single-ticket-development\nor create one: gears runbook new \"...\"\n", strings.Join(out.Builtins, ", "))
 		}
 		for _, rb := range out.Runbooks {
 			fmt.Printf("%-32s %-40s %-5s %d step%s\n", rb.Slug, rb.Title, rb.Target, len(rb.Steps), plural(len(rb.Steps), "", "s"))
@@ -187,20 +195,7 @@ var runbookShowCmd = &cobra.Command{
 			printRun(out.Run)
 			return nil
 		}
-		fmt.Printf("%s  (%s, target %s)\n", out.Runbook.Title, out.Runbook.Slug, out.Runbook.Target)
-		for _, s := range out.Runbook.Steps {
-			check := ""
-			if s.Check != "" {
-				check = "  <" + s.Check + ">"
-			}
-			if s.Name != "" {
-				check += "  name " + s.Name
-			}
-			if s.When != "" {
-				check += "  when " + s.When
-			}
-			fmt.Printf("  %02d  %-6s %s%s\n", s.Idx, s.Kind, s.Text, check)
-		}
+		printRunbook(out.Runbook)
 		return nil
 	},
 }
@@ -331,12 +326,229 @@ var runbookAbandonCmd = &cobra.Command{
 	},
 }
 
+func stepIdx(arg string) (int, error) {
+	n, err := strconv.Atoi(arg)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("step %q: want a step number from gears runbook show", arg)
+	}
+	return n, nil
+}
+
+func printRunbook(out *verbs.Runbook) {
+	fmt.Printf("%s  (%s, target %s)\n", out.Title, out.Slug, out.Target)
+	for _, s := range out.Steps {
+		check := ""
+		if s.Check != "" {
+			check = "  <" + s.Check + ">"
+		}
+		if s.Name != "" {
+			check += "  name " + s.Name
+		}
+		if s.When != "" {
+			check += "  when " + s.When
+		}
+		fmt.Printf("  %02d  %-6s %s%s\n", s.Idx, s.Kind, s.Text, check)
+	}
+}
+
+var runbookStepUpdateCmd = &cobra.Command{
+	Use:   "update <slug> <step> [text]",
+	Short: "Edit a step in place (flags set; --clear-* unset)",
+	Long: `Only the flags you pass change. Text, if given, replaces the step text.
+  gears runbook step update single-ticket 5 --name review "Review needed? yes/no"
+  gears runbook step update single-ticket 6 --check merged:main
+  gears runbook step update single-ticket 6 --clear-when
+Refused while a run is active on the runbook.`,
+	Args: cobra.MinimumNArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := ctx()
+		if err != nil {
+			return err
+		}
+		n, err := stepIdx(args[1])
+		if err != nil {
+			return err
+		}
+		in := verbs.RunbookStepUpdateIn{Runbook: args[0], Step: n}
+		if len(args) > 2 {
+			t := strings.Join(args[2:], " ")
+			in.Text = &t
+		}
+		if cmd.Flags().Changed("kind") {
+			in.Kind = &rbKind
+		}
+		if cmd.Flags().Changed("check") {
+			in.Check = &rbCheck
+		}
+		if cmd.Flags().Changed("name") {
+			in.Name = &rbName
+		}
+		if cmd.Flags().Changed("when") {
+			in.When = &rbWhen
+		}
+		empty := ""
+		if rbClearCheck {
+			in.Check = &empty
+		}
+		if rbClearName {
+			in.Name = &empty
+		}
+		if rbClearWhen {
+			in.When = &empty
+		}
+		out, err := verbs.RunbookStepUpdate(c, in)
+		if err != nil {
+			return err
+		}
+		if emit(out) {
+			return nil
+		}
+		printRunbook(out)
+		return nil
+	},
+}
+
+var runbookStepRemoveCmd = &cobra.Command{
+	Use:   "remove <slug> <step>",
+	Short: "Remove a step; later steps renumber",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := ctx()
+		if err != nil {
+			return err
+		}
+		n, err := stepIdx(args[1])
+		if err != nil {
+			return err
+		}
+		out, err := verbs.RunbookStepRemove(c, verbs.RunbookStepRemoveIn{Runbook: args[0], Step: n})
+		if err != nil {
+			return err
+		}
+		if emit(out) {
+			return nil
+		}
+		printRunbook(out)
+		return nil
+	},
+}
+
+var runbookStepMoveCmd = &cobra.Command{
+	Use:   "move <slug> <step> --to <position>",
+	Short: "Move a step to a new position",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := ctx()
+		if err != nil {
+			return err
+		}
+		n, err := stepIdx(args[1])
+		if err != nil {
+			return err
+		}
+		if rbTo < 1 {
+			return fmt.Errorf("--to <position> is required")
+		}
+		out, err := verbs.RunbookStepMove(c, verbs.RunbookStepMoveIn{Runbook: args[0], Step: n, To: rbTo})
+		if err != nil {
+			return err
+		}
+		if emit(out) {
+			return nil
+		}
+		printRunbook(out)
+		return nil
+	},
+}
+
+var runbookUpdateCmd = &cobra.Command{
+	Use:   "update <slug> [--title ...] [--target card|repo|none]",
+	Short: "Change a runbook's title or target (the slug stays)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := ctx()
+		if err != nil {
+			return err
+		}
+		if rbTitle == "" && rbTargetKind == "" {
+			return fmt.Errorf("pass --title and/or --target")
+		}
+		out, err := verbs.RunbookUpdate(c, verbs.RunbookUpdateIn{Runbook: args[0], Title: rbTitle, Target: rbTargetKind})
+		if err != nil {
+			return err
+		}
+		if emit(out) {
+			return nil
+		}
+		printRunbook(out)
+		return nil
+	},
+}
+
+var runbookDeleteCmd = &cobra.Command{
+	Use:   "delete <slug>",
+	Short: "Delete a runbook definition (refused while a run is active on it)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := ctx()
+		if err != nil {
+			return err
+		}
+		out, err := verbs.RunbookDelete(c, verbs.RunbookDeleteIn{Runbook: args[0]})
+		if err != nil {
+			return err
+		}
+		if emit(out) {
+			return nil
+		}
+		fmt.Printf("runbook--%s.yaml deleted\n", out.Slug)
+		return nil
+	},
+}
+
+var runbookCopyCmd = &cobra.Command{
+	Use:   "copy <slug> [--from <project dir>] [--as <title>]",
+	Short: "Copy a built-in or another project's runbook into this one",
+	Long: `Without --from, <slug> names a built-in (gears runbook list shows them).
+  gears runbook copy single-ticket-development
+  gears runbook copy single-ticket-development --from ../gears-cli --as "Ticket flow"`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := ctx()
+		if err != nil {
+			return err
+		}
+		out, err := verbs.RunbookCopy(c, verbs.RunbookCopyIn{Runbook: args[0], From: rbFrom, As: rbAs})
+		if err != nil {
+			return err
+		}
+		if emit(out) {
+			return nil
+		}
+		fmt.Println(out.Path)
+		printRunbook(out)
+		return nil
+	},
+}
+
 func init() {
 	runbookStepAddCmd.Flags().StringVarP(&rbKind, "kind", "k", "do", "ask | do | gears | git | gate")
 	runbookStepAddCmd.Flags().StringVar(&rbCheck, "check", "", "check or check:arg for the kind (see runbook --help)")
 	runbookStepAddCmd.Flags().StringVar(&rbName, "name", "", "name this step so a later --when can refer to its evidence")
 	runbookStepAddCmd.Flags().StringVar(&rbWhen, "when", "", "condition name=value or name!=value; the step is skipped when it does not hold")
 	runbookNewCmd.Flags().StringVar(&rbTargetKind, "target", "none", "card | repo | none")
+	runbookUpdateCmd.Flags().StringVar(&rbTargetKind, "target", "", "card | repo | none")
+	runbookUpdateCmd.Flags().StringVar(&rbTitle, "title", "", "new title")
+	runbookStepUpdateCmd.Flags().StringVarP(&rbKind, "kind", "k", "", "ask | do | gears | git | gate")
+	runbookStepUpdateCmd.Flags().StringVar(&rbCheck, "check", "", "check or check:arg")
+	runbookStepUpdateCmd.Flags().StringVar(&rbName, "name", "", "step name for when:")
+	runbookStepUpdateCmd.Flags().StringVar(&rbWhen, "when", "", "condition name=value or name!=value")
+	runbookStepUpdateCmd.Flags().BoolVar(&rbClearCheck, "clear-check", false, "remove the check")
+	runbookStepUpdateCmd.Flags().BoolVar(&rbClearName, "clear-name", false, "remove the name")
+	runbookStepUpdateCmd.Flags().BoolVar(&rbClearWhen, "clear-when", false, "remove the condition")
+	runbookStepMoveCmd.Flags().IntVar(&rbTo, "to", 0, "position the step lands on (1-based)")
+	runbookCopyCmd.Flags().StringVar(&rbFrom, "from", "", "another project's root directory (default: built-in)")
+	runbookCopyCmd.Flags().StringVar(&rbAs, "as", "", "title for the copy")
 	runbookStartCmd.Flags().StringVar(&rbTarget, "target", "", "the card key for a card runbook")
 	for _, c := range []*cobra.Command{runbookStepDoneCmd, runbookSkipCmd, runbookAbandonCmd, runbookTakeoverCmd} {
 		c.Flags().StringVar(&rbRun, "run", "", "run id (default: your active run)")
@@ -345,7 +557,7 @@ func init() {
 	runbookAbandonCmd.Flags().StringVar(&rbReason, "reason", "", "why the run is abandoned (required)")
 	runbookTakeoverCmd.Flags().StringVar(&rbReason, "reason", "", "why you are taking the run (required)")
 
-	runbookStepCmd.AddCommand(runbookStepAddCmd, runbookStepDoneCmd)
-	runbookCmd.AddCommand(runbookNewCmd, runbookListCmd, runbookShowCmd, runbookStartCmd, runbookStepCmd, runbookSkipCmd, runbookTakeoverCmd, runbookAbandonCmd)
+	runbookStepCmd.AddCommand(runbookStepAddCmd, runbookStepUpdateCmd, runbookStepRemoveCmd, runbookStepMoveCmd, runbookStepDoneCmd)
+	runbookCmd.AddCommand(runbookNewCmd, runbookCopyCmd, runbookUpdateCmd, runbookDeleteCmd, runbookListCmd, runbookShowCmd, runbookStartCmd, runbookStepCmd, runbookSkipCmd, runbookTakeoverCmd, runbookAbandonCmd)
 	root.AddCommand(runbookCmd)
 }
