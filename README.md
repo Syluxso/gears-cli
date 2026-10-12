@@ -12,6 +12,19 @@ would produce `gears-cli`):
 Then in any repo: `gears init`, `gears status`. For an MCP harness, point it at
 `gears run --dir <repo>` with `GEARS_AGENT` set to the agent's label.
 
+Account and sync (slice 1):
+
+    gears login --email you@example.com      # device token to ~/.gears/credentials.json,
+                                             # then registers this workspace/project, reports pulls
+    gears sync                               # push desk, session, artifact changes; pull and apply
+    gears whoami                             # host, token state, workspace this syncs to
+    gears logout                             # revoke the device, forget the token
+
+`GEARS_API` or `--api` picks the host (default api.gearsos.com). `.gears/` is
+never committed: project.yaml is the binding, the rest is cache; the record is
+gearsos.com. A fresh clone binds by its git remote on first login.
+`scripts/e2e-sync.sh` proves the round trip against a local gears-api.
+
 Sibling repos:
 
 - [gears-api](https://github.com/Syluxso/gears-api) — Go / Gin / byz-platform

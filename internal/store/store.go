@@ -61,6 +61,12 @@ var columns = []struct{ table, column, def string }{
 	{"run_steps", "arg", "TEXT NOT NULL DEFAULT ''"},
 	{"run_steps", "name", "TEXT NOT NULL DEFAULT ''"},
 	{"run_steps", "when_cond", "TEXT NOT NULL DEFAULT ''"},
+	// Sync (slice 1): session entries get a client-minted uuid, desk items an
+	// updated_at, artifacts the byz-files id their body lives under.
+	{"session_entries", "uid", "TEXT NOT NULL DEFAULT ''"},
+	{"session_entries", "project_id", "TEXT NOT NULL DEFAULT ''"},
+	{"desk_items", "updated_at", "TEXT NOT NULL DEFAULT ''"},
+	{"artifacts", "remote_file_id", "TEXT NOT NULL DEFAULT ''"},
 }
 
 func addColumns(db *sql.DB) error {
@@ -135,6 +141,10 @@ func Parse(s string) time.Time {
 
 var schema = []string{
 	// Sessions: one timeline per project, entries from every agent.
+	`CREATE TABLE IF NOT EXISTS sync_state (
+		key   TEXT PRIMARY KEY,
+		value TEXT NOT NULL DEFAULT ''
+	)`,
 	`CREATE TABLE IF NOT EXISTS session_entries (
 		id    INTEGER PRIMARY KEY,
 		at    TEXT NOT NULL,

@@ -1,5 +1,5 @@
 // Package project is the binding between a directory and a Gears project:
-// the committed .gears/project.yaml, and the paths that hang off it.
+// .gears/project.yaml (never committed) and the paths that hang off it.
 package project
 
 import (
@@ -41,6 +41,10 @@ type Project struct {
 	// every clone mints the same keys.
 	Prefix  string    `yaml:"prefix"`
 	Created time.Time `yaml:"created"`
+	// Workspace is the UUID of the workspace this project belongs to. Empty
+	// means: the nearest ancestor binding is the workspace, or, with none,
+	// this binding is itself the workspace. Written by gears login.
+	Workspace string `yaml:"workspace,omitempty"`
 	// Root is the directory that holds .gears/. Not serialised.
 	Root string `yaml:"-"`
 }
@@ -65,6 +69,44 @@ func (p *Project) RunPidPath() string   { return filepath.Join(p.GearboxPath(), 
 // first. Open moves the first one it finds, once.
 func (p *Project) LegacyLocalPaths() []string {
 	return []string{filepath.Join(p.GearsDir(), LocalFile), filepath.Join(p.GearsDir(), legacyCacheFile)}
+}
+
+// WorkspaceID resolves the workspace this project syncs to: the explicit
+// field, else the nearest ancestor binding's id, else this project's own id
+// (a root binding is its own workspace).
+func (p *Project) WorkspaceID() string {
+	if p.Workspace != "" {
+		return p.Workspace
+	}
+	if anc := p.Ancestor(); anc != nil {
+		return anc.WorkspaceID()
+	}
+	return p.ID
+}
+
+// IsWorkspace reports whether this binding is the workspace itself.
+func (p *Project) IsWorkspace() bool { return p.WorkspaceID() == p.ID }
+
+// Ancestor returns the nearest binding above this one, or nil.
+func (p *Project) Ancestor() *Project {
+	parent := filepath.Dir(p.Root)
+	if parent == p.Root {
+		return nil
+	}
+	anc, err := Find(parent)
+	if err != nil {
+		return nil
+	}
+	return anc
+}
+
+// Save rewrites the binding file.
+func (p *Project) Save() error {
+	out, err := yaml.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(p.GearsDir(), BindingFile), out, 0o644)
 }
 
 // ErrNotBound is returned when no .gears/project.yaml is found walking up.
@@ -232,8 +274,10 @@ func ensureDir(path, root string, res *InitResult) error {
 	return nil
 }
 
+// .gears/ is never committed (decided 2026-10-12): the persistent store is
+// gearsos.com, the directory is binding plus cache.
 var ignoreLines = []string{
-	Dir + "/" + GearboxDir + "/",
+	Dir + "/",
 }
 
 func ensureGitignore(root string, res *InitResult) error {

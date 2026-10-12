@@ -53,6 +53,8 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 	add(s, c, "artifact_validate", "Check artifacts against the shapes in force. Returns problems per file.", verbs.ArtifactValidate)
 	add(s, c, "artifact_shapes", "The shapes in force: required front matter, required sections, minimum body, and whether built-in or a project override.", verbs.Shapes)
 
+	add(s, c, "sync", "Push local desk, session and artifact changes to gears-api, then pull and apply changes from the workspace. Needs gears login first.", verbs.Sync)
+	add(s, c, "whoami", "Which API host, whether the saved device token works, and the workspace this project syncs to.", verbs.Whoami)
 	add(s, c, "export", "Dump the local record (every table, every row) as JSON, or to a file with out. The record is not committed; this is its backup until sync exists.", verbs.Export)
 
 	add(s, c, "runbook_list", "Runbooks in this project, the active runs, the step vocabulary and the rules (one run per agent; owner advances; a run owns its card; evidence is Gears or git objects only).", verbs.RunbookList)

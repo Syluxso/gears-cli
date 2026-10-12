@@ -33,8 +33,6 @@ Thumbs.db
 bin/
 
 # Gears local state
-.gears/local.db
-.gears/run.pid
 
 # Gears local state
-.gears/.gearbox/
+.gears/

@@ -482,6 +482,9 @@ func nextADRNumber(p *project.Project) (int, error) {
 	return n + 1, nil
 }
 
+// Hash is the body hash sync compares: sha256 of the LF-normalised body, 16 hex chars.
+func Hash(s string) string { return hash(s) }
+
 func hash(s string) string {
 	sum := sha256.Sum256([]byte(strings.ReplaceAll(s, "\r\n", "\n")))
 	return hex.EncodeToString(sum[:8])

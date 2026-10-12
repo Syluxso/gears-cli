@@ -106,3 +106,12 @@ func CurrentBranch(dir string) string {
 	out, _ := run(dir, "rev-parse", "--abbrev-ref", "HEAD")
 	return out
 }
+
+// RemoteURL is origin's fetch URL, or "".
+func RemoteURL(dir string) string {
+	out, ok := run(dir, "remote", "get-url", "origin")
+	if !ok {
+		return ""
+	}
+	return out
+}
