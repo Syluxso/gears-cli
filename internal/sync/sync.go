@@ -421,10 +421,14 @@ func apply(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, c
 		if err := json.Unmarshal(ch.Row, &a); err != nil {
 			return false, err
 		}
-		// Only this project's artifacts land in this cache (or workspace-level ones).
-		mine := a.ProjectID == nil || *a.ProjectID == "" || *a.ProjectID == p.ID
-		if !mine {
-			return false, nil
+		// An artifact belongs to the binding it was made in: a project
+		// binding pushes its own id as projectId, the workspace root pushes
+		// none. Each cache holds only its own binding's artifacts, so the
+		// same file name at the root and in a project is two artifacts, not
+		// a collision (GRS-26). Workspace-level rows never land in a project
+		// cache, and a project's rows never land at the root or in a sibling.
+		if !ownArtifact(p, a.ProjectID) {
+			return false, evictForeign(db, p, a.ID, a.BodyHash, r)
 		}
 		// Deleted here and the delete not yet pushed: do not bring it back.
 		var tomb int
@@ -472,6 +476,48 @@ func apply(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, c
 		return false, nil
 	}
 	return false, nil
+}
+
+// ownArtifact reports whether a pulled artifact belongs in this binding's
+// cache: the row's projectId is this project, or empty at the workspace root.
+func ownArtifact(p *project.Project, projectID *string) bool {
+	pid := ""
+	if projectID != nil {
+		pid = *projectID
+	}
+	if p.IsWorkspace() {
+		return pid == "" || pid == p.ID
+	}
+	return pid == p.ID
+}
+
+// evictForeign clears a row this cache holds for an artifact that belongs to
+// another binding (a cache from before GRS-26 that took workspace-level rows
+// in). Left alone, the next push would stamp it with this project's id and
+// re-home it. The server keeps the row and body, so dropping the cached copy
+// loses nothing; a local file whose body differs from the server's is kept
+// and only the row goes, so Reconcile adopts it as this binding's own.
+func evictForeign(db *sql.DB, p *project.Project, id, serverHash string, r *Report) error {
+	var file string
+	err := db.QueryRow(`SELECT file FROM artifacts WHERE id = ?`, id).Scan(&file)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	body, rerr := os.ReadFile(filepath.Join(p.ArtifactsDir(), file))
+	if rerr != nil || artifact.Hash(string(body)) == serverHash {
+		return artifact.Forget(db, p, id)
+	}
+	if _, err := db.Exec(`DELETE FROM artifact_tags WHERE artifact_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`DELETE FROM artifacts WHERE id = ?`, id); err != nil {
+		return err
+	}
+	r.Notes = append(r.Notes, fmt.Sprintf("artifact %s belongs to another binding; local edits to %s kept as this binding's own", short(id), file))
+	return nil
 }
 
 // ----------------------------------------------------------------- state

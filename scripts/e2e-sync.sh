@@ -84,6 +84,23 @@ CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" 
 ( cd "$C" && "$G" artifact list --json | grep -q "$ART" ) && { echo "clone still lists $ART"; exit 1; }
 echo "ok: row and file gone on both machines; API row soft-deleted"
 
+echo "== GRS-26: same artifact file name at the root and in alpha; each cache keeps its own"
+SAME=free--same-name.md
+( cd "$WORK/ws" && "$G" artifact new free "Same name" >/dev/null && printf '\nroot body\n' >> ".gears/artifacts/$SAME" && "$G" artifact reconcile >/dev/null && "$G" sync >/dev/null )
+( cd "$A" && "$G" artifact new free "Same name" >/dev/null && printf '\nalpha body\n' >> ".gears/artifacts/$SAME" && "$G" artifact reconcile >/dev/null )
+for d in "$A" "$WORK/ws" "$A" "$C"; do
+  ( cd "$d" && "$G" sync --json | python -c "import json,sys; r=json.load(sys.stdin); bad=[n for n in r['notes'] if 'UNIQUE' in n or 'apply' in n]; assert not bad and r['failed']==0, r; print('ok: sync', '$d'.rsplit('/',2)[-2:], 'pulled', r['pulled'], 'applied', r['applied'])" )
+done
+grep -q "root body" "$WORK/ws/.gears/artifacts/$SAME" && ! grep -q "alpha body" "$WORK/ws/.gears/artifacts/$SAME" || { echo "root file overwritten"; exit 1; }
+grep -q "alpha body" "$A/.gears/artifacts/$SAME" && ! grep -q "root body" "$A/.gears/artifacts/$SAME" || { echo "alpha file overwritten"; exit 1; }
+ROOT_SAME=$(cd "$WORK/ws" && "$G" artifact list --json | python -c "import json,sys; print([a['id'] for a in json.load(sys.stdin)['artifacts'] if a['file']=='$SAME'][0])")
+ALPHA_SAME=$(cd "$A" && "$G" artifact list --json | python -c "import json,sys; print([a['id'] for a in json.load(sys.stdin)['artifacts'] if a['file']=='$SAME'][0])")
+[ "$ROOT_SAME" != "$ALPHA_SAME" ] || { echo "root and alpha share an id"; exit 1; }
+CLONE_SAME=$(cd "$C" && "$G" artifact list --json | python -c "import json,sys; print([a['id'] for a in json.load(sys.stdin)['artifacts'] if a['file']=='$SAME'][0])")
+[ "$CLONE_SAME" = "$ALPHA_SAME" ] || { echo "clone of alpha got $CLONE_SAME, want alpha's $ALPHA_SAME"; exit 1; }
+curl -s -H "Authorization: Bearer $TOKEN" "$GEARS_API/api/v1/artifacts/$ALPHA_SAME" | python -c "import json,sys; a=json.load(sys.stdin); a=a.get('artifact',a); assert a.get('projectId')=='$ALPHA_ID', a; print('ok: alpha artifact carries projectId')"
+curl -s -H "Authorization: Bearer $TOKEN" "$GEARS_API/api/v1/artifacts/$ROOT_SAME" | python -c "import json,sys; a=json.load(sys.stdin); a=a.get('artifact',a); assert not a.get('projectId'), a; print('ok: root artifact has no projectId')"
+
 echo "== second sync is a no-op"
 ( cd "$WORK/ws/projects/alpha" && "$G" sync --json | python -c "import json,sys; r=json.load(sys.stdin); assert r['pushed']==0 and r['failed']==0, r; print('ok: pushed', r['pushed'], 'pulled', r['pulled'])" )
 
