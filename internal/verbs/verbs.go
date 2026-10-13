@@ -75,11 +75,19 @@ func ts(t time.Time) string {
 // StatusIn has no fields; the agent comes from Ctx.
 type StatusIn struct{}
 
-// StatusOut is the cold-start packet.
+// StatusOut is the cold-start packet: the whole workspace (GRS-46), not
+// the one project the command runs in.
 type StatusOut struct {
+	// Project and ProjectID are the binding at Root: the workspace itself
+	// at a workspace root, the project for a standalone clone.
 	Project   string `json:"project"`
 	ProjectID string `json:"projectId"`
 	Root      string `json:"root"`
+	// IsWorkspace is true at a workspace root, false for a standalone clone.
+	IsWorkspace bool `json:"isWorkspace"`
+	// Projects is every project in the workspace: manifest, disk and API.
+	Projects []StatusProject `json:"projects"`
+	API      StatusAPI       `json:"api"`
 	// Current is the project the working directory is in (GRS-40); absent
 	// at the workspace root.
 	Current    *project.ManifestEntry `json:"current,omitempty"`
@@ -119,9 +127,23 @@ type ArtifactStats struct {
 // Status assembles everything an agent needs before it starts.
 func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 	out := &StatusOut{Project: c.Project.Slug, ProjectID: c.Project.ID, Root: c.Project.Root, Agent: c.agent(), Prefix: c.Project.Prefix,
-		Desk: []DeskItem{}, Runs: []RunSummary{}, Session: []SessionLine{},
+		IsWorkspace: c.Project.IsWorkspace(), Desk: []DeskItem{}, Runs: []RunSummary{}, Session: []SessionLine{},
 		Cards:     CardStats{ByState: []CardState{}, Mine: []CardLine{}, Ready: []CardLine{}},
 		Artifacts: ArtifactStats{ByPrefix: map[string]int{}, Problems: []string{}}, Current: c.Current}
+
+	// Git and the API are the slow part; they run while the local record
+	// is read.
+	type wsResult struct {
+		projects []StatusProject
+		api      StatusAPI
+		err      error
+	}
+	ws := make(chan wsResult, 1)
+	go func() {
+		p, a, err := workspaceProjects(c)
+		ws <- wsResult{p, a, err}
+	}()
+	defer func() { <-ws }() // never leave it running past an early return
 
 	items, err := desk.List(c.Project, desk.Filter{Agent: out.Agent})
 	if err != nil {
@@ -196,6 +218,13 @@ func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 	for _, e := range entries {
 		out.Session = append(out.Session, sessionLine(e))
 	}
+
+	r := <-ws
+	ws <- r // for the deferred receive
+	if r.err != nil {
+		return nil, r.err
+	}
+	out.Projects, out.API = r.projects, r.api
 
 	switch {
 	case len(out.Runs) > 0 && out.Runs[0].Current != nil:

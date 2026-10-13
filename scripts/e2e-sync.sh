@@ -158,6 +158,17 @@ GAMMA_MINTED=$(pid gamma)
 ( cd "$WS" && "$G" session list --json ) | python -c "import json,sys; e=[x for x in json.load(sys.stdin)['entries'] if x['text']=='gamma work']; assert len(e)==1 and e[0].get('projectId')=='$GAMMA_API', e; print('ok: gamma entry retagged')"
 projects | python -c "$PJ; ids=[p['id'] for p in d]; assert '$GAMMA_API' in ids and '$GAMMA_MINTED' not in ids, d; print('ok: no second gamma on the API')"
 
+echo "== GRS-46: status inside projects/gamma is the workspace report, with the API's list"
+( cd "$GM" && "$G" status --json ) | python -c "
+import json,sys
+s=json.load(sys.stdin); ps={p['slug']:p for p in s['projects']}
+assert s['api']['state']=='online', s['api']
+assert ps['gamma']['current'] and ps['gamma']['onApi'] and ps['gamma']['id']=='$GAMMA_API', ps['gamma']
+assert ps['alpha']['onApi'] and ps['alpha']['git']['branch']=='main' and not ps['alpha'].get('current'), ps['alpha']
+assert not ps['beta']['onDisk'] and any('missing' in n for n in ps['beta']['notes']), ps['beta']
+print('ok: status', len(ps), 'projects, api', s['api']['state'], s['api']['projects'])"
+( cd "$GM" && GEARS_API=http://127.0.0.1:1 "$G" status ) | grep -q "api: not logged in" || fail "status for a host with no token does not say so"
+
 echo "== second sync is a no-op"
 # The push window includes the last push's second (stamps are to the
 # second), so the first sync after a write in that second re-sends it once.

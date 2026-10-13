@@ -18,7 +18,7 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "gears", Version: version}, nil)
 
 	add(s, c, "status",
-		"Cold-start packet. Run first in every session: project, open desk items for this agent, active runs, artifact counts and shape problems, today's session entries, and a suggested next action.",
+		"Cold-start packet for the whole workspace. Run first in every session: every project (manifest, projects/ on disk, gears-api when logged in) with tech, git remote, branch, last commit, dirty count, ahead/behind and README line; open desk items for this agent, active runs, artifact counts and shape problems, today's session entries, and a suggested next action.",
 		verbs.Status)
 
 	add(s, c, "desk_list", "Open desk items addressed to this agent or to anyone. Set all to include closed items.", verbs.DeskList)

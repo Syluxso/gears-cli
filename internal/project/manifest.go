@@ -266,3 +266,53 @@ func addedID(add []ManifestEntry, id string) bool {
 	}
 	return false
 }
+
+// Found is one project directory as Discover sees it: a manifest entry, a
+// directory under projects/ the manifest does not list yet, or both.
+type Found struct {
+	ManifestEntry
+	Dir    string `json:"-"` // absolute; "" when the entry's repo is gone
+	Listed bool   `json:"listed"`
+	OnDisk bool   `json:"onDisk"`
+	Git    bool   `json:"git"` // Dir has a .git (directory or file)
+}
+
+// Discover lists the workspace's projects without changing anything: every
+// manifest entry, plus every directory under <root>/projects/ the manifest
+// does not hold (a git repo there is what gears projects scan would add).
+// A standalone project binding is its own one entry. Sorted by path.
+func Discover(p *Project) ([]Found, error) {
+	isGit := func(dir string) bool {
+		_, err := os.Stat(filepath.Join(dir, ".git"))
+		return err == nil
+	}
+	if !p.IsWorkspace() {
+		return []Found{{ManifestEntry: ManifestEntry{ID: p.ID, Slug: p.Slug, Path: "."}, Dir: p.Root, Listed: true, OnDisk: true, Git: isGit(p.Root)}}, nil
+	}
+	m, err := LoadManifest(p)
+	if err != nil {
+		return nil, err
+	}
+	var out []Found
+	listed := map[string]bool{}
+	for _, e := range m.Projects {
+		f := Found{ManifestEntry: e, Listed: true}
+		listed[e.Path] = true
+		dir := filepath.Join(p.Root, filepath.FromSlash(e.Path))
+		if st, err := os.Stat(dir); err == nil && st.IsDir() {
+			f.Dir, f.OnDisk, f.Git = dir, true, isGit(dir)
+		}
+		out = append(out, f)
+	}
+	entries, _ := os.ReadDir(filepath.Join(p.Root, ProjectsDir))
+	for _, d := range entries {
+		path := ProjectsDir + "/" + d.Name()
+		if !d.IsDir() || listed[path] || strings.HasPrefix(d.Name(), ".") {
+			continue
+		}
+		dir := filepath.Join(p.Root, ProjectsDir, d.Name())
+		out = append(out, Found{ManifestEntry: ManifestEntry{Slug: Slugify(d.Name()), Path: path}, Dir: dir, OnDisk: true, Git: isGit(dir)})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
+}

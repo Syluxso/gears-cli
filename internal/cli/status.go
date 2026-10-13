@@ -19,10 +19,16 @@ var statusFull bool
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Cold-start packet for this project",
-	Long: `Everything an agent needs before it starts: the bound project, open desk
-items, active runs, artifacts and whether they pass their shapes, and the
-latest session entries. Run it first in every session.
+	Short: "Cold-start packet for the whole workspace",
+	Long: `Everything an agent needs before it starts: every project in the
+workspace (from .gears/projects.yaml, the directories under projects/ and,
+when logged in, gears-api) with its tech, branch, last commit, dirty files
+and README line; open desk items, cards, active runs, artifacts and whether
+they pass their shapes, and the latest session entries. Run it first in
+every session. Inside projects/<repo> it is the same report, with that
+project marked ▸. It never writes the manifest: a repo the manifest does not
+list is reported as unlisted, for gears projects scan. Nothing is fetched;
+ahead/behind are as of the last fetch.
 
 The text is a glance: each section is one header line with its count and at
 most three lines, each cut to the terminal width, with the command that
@@ -109,10 +115,22 @@ func printStatusBrief(w io.Writer, out *verbs.StatusOut, width int, colour bool)
 		}
 	}
 
-	line(fmt.Sprintf("project   %s  %s  (cards %s-n)", out.Project, out.ProjectID, out.Prefix))
+	line(fmt.Sprintf("%-9s %s  %s  (cards %s-n)", bindingLabel(out), out.Project, out.ProjectID, out.Prefix))
 	line(fmt.Sprintf("agent     %s", out.Agent))
-	if out.Current != nil {
-		line(fmt.Sprintf("in        %s  %s  (%s)", out.Current.Slug, out.Current.ID, out.Current.Path))
+
+	fmt.Fprintln(w)
+	head("projects", projectsHeader(out))
+	slugW := 0
+	for _, p := range out.Projects {
+		slugW = max(slugW, utf8.RuneCountInString(p.Slug))
+	}
+	now := time.Now()
+	for _, p := range out.Projects {
+		mark := " "
+		if p.Current {
+			mark = "▸"
+		}
+		item(fmt.Sprintf("%s %-*s", mark, slugW, p.Slug), projectGlance(p, now))
 	}
 
 	fmt.Fprintln(w)
@@ -202,12 +220,59 @@ func printStatusBrief(w io.Writer, out *verbs.StatusOut, width int, colour bool)
 
 // printStatusFull is the untrimmed text: every item, uncut, no colour.
 func printStatusFull(out *verbs.StatusOut) {
-	fmt.Printf("project   %s  %s  (cards %s-n)\n", out.Project, out.ProjectID, out.Prefix)
+	fmt.Printf("%-9s %s  %s  (cards %s-n)\n", bindingLabel(out), out.Project, out.ProjectID, out.Prefix)
 	fmt.Printf("agent     %s\n", out.Agent)
-	if out.Current != nil {
-		fmt.Printf("in        %s  %s  (%s)\n", out.Current.Slug, out.Current.ID, out.Current.Path)
-	}
 	fmt.Printf("root      %s\n", out.Root)
+
+	fmt.Printf("\nprojects  %s\n", projectsHeader(out))
+	if out.API.Error != "" {
+		fmt.Printf("  api error: %s\n", out.API.Error)
+	}
+	now := time.Now()
+	for _, p := range out.Projects {
+		mark := " "
+		if p.Current {
+			mark = "▸"
+		}
+		fmt.Printf("%s %s  %s  %s\n", mark, p.Slug, orDash(p.Path), orDash(p.ID))
+		row := func(k, v string) {
+			if v != "" {
+				fmt.Printf("    %-7s %s\n", k, v)
+			}
+		}
+		if p.Name != p.Slug {
+			row("name", p.Name)
+		}
+		row("remote", p.Remote)
+		if p.OnDisk {
+			row("tech", strings.TrimSpace(p.Tech.String()+"  "+p.Tech.Detail))
+		}
+		if g := p.Git; g != nil {
+			br := g.Branch
+			if g.Detached {
+				br = "(detached)"
+			}
+			if g.Upstream != "" {
+				br += fmt.Sprintf(" → %s  ahead %d, behind %d", g.Upstream, g.Ahead, g.Behind)
+			} else {
+				br += "  (no upstream)"
+			}
+			row("branch", br)
+			if g.Head != "" {
+				row("commit", fmt.Sprintf("%s  %s  (%s)", g.Head, g.Subject, ago(parseTS(g.CommittedAt), now)))
+			} else {
+				row("commit", "(no commits)")
+			}
+			row("dirty", fmt.Sprintf("%d file%s", g.Dirty, plural(g.Dirty, "", "s")))
+		}
+		row("readme", p.Readme)
+		if p.OnAPI != nil {
+			row("api", map[bool]string{true: "on gears-api", false: "not on gears-api"}[*p.OnAPI])
+		}
+		for _, n := range p.Notes {
+			row("note", n)
+		}
+	}
 
 	fmt.Printf("\ndesk      %d open item%s\n", len(out.Desk), plural(len(out.Desk), "", "s"))
 	for _, it := range out.Desk {
@@ -298,6 +363,101 @@ func (s style) wrap(code, t string) string {
 func (s style) bold(t string) string { return s.wrap("1", t) }
 func (s style) dim(t string) string  { return s.wrap("2", t) }
 func (s style) cyan(t string) string { return s.wrap("36", t) }
+
+func bindingLabel(out *verbs.StatusOut) string {
+	if out.IsWorkspace {
+		return "workspace"
+	}
+	return "project"
+}
+
+// projectsHeader is the count line: how many, what is off, the API.
+func projectsHeader(out *verbs.StatusOut) string {
+	var unlisted, missing int
+	for _, p := range out.Projects {
+		switch {
+		case !p.OnDisk && p.Listed:
+			missing++
+		case p.OnDisk && !p.Listed:
+			unlisted++
+		}
+	}
+	s := fmt.Sprintf("%d", len(out.Projects))
+	if unlisted > 0 {
+		s += fmt.Sprintf(", %d unlisted", unlisted)
+	}
+	if missing > 0 {
+		s += fmt.Sprintf(", %d missing", missing)
+	}
+	s += "  api: " + out.API.State
+	if out.API.State == verbs.APIOnline {
+		s += fmt.Sprintf(" (%d project%s)", out.API.Projects, plural(out.API.Projects, "", "s"))
+	}
+	return s
+}
+
+// projectGlance is one project's line after its slug: tech, branch, dirty
+// count, last commit age, ahead/behind, and the first note.
+func projectGlance(p verbs.StatusProject, now time.Time) string {
+	tech := "-"
+	if p.OnDisk {
+		tech = p.Tech.String()
+	}
+	parts := []string{fmt.Sprintf("%-13s", tech)}
+	if g := p.Git; g != nil {
+		br := g.Branch
+		if g.Detached {
+			br = "(detached)"
+		}
+		dirty := "clean"
+		if g.Dirty > 0 {
+			dirty = fmt.Sprintf("%d dirty", g.Dirty)
+		}
+		age := "no commits"
+		if g.Head != "" {
+			age = ago(parseTS(g.CommittedAt), now)
+		}
+		parts = append(parts, fmt.Sprintf("%-10s %-8s %-10s", br, dirty, age))
+		if g.Ahead > 0 || g.Behind > 0 {
+			parts = append(parts, fmt.Sprintf("↑%d ↓%d", g.Ahead, g.Behind))
+		}
+	}
+	if len(p.Notes) > 0 {
+		parts = append(parts, p.Notes[0])
+	}
+	return strings.TrimRight(strings.Join(parts, " "), " ")
+}
+
+// ago is a short relative age: 40s ago, 5m ago, 3h ago, 2d ago, 3w ago,
+// 4mo ago, 2y ago.
+func ago(t, now time.Time) string {
+	if t.IsZero() {
+		return "?"
+	}
+	d := now.Sub(t)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", max(0, int(d.Seconds())))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 14*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	case d < 60*24*time.Hour:
+		return fmt.Sprintf("%dw ago", int(d.Hours()/24/7))
+	case d < 365*24*time.Hour:
+		return fmt.Sprintf("%dmo ago", int(d.Hours()/24/30))
+	}
+	return fmt.Sprintf("%dy ago", int(d.Hours()/24/365))
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
 
 func orAnyone(to string) string {
 	if to == "" {

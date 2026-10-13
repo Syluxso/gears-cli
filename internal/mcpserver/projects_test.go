@@ -79,3 +79,77 @@ func TestProjectsToolsOverMCP(t *testing.T) {
 		t.Fatalf("session entry project %q, want %s", line.ProjectID, list.Projects[0].ID)
 	}
 }
+
+// GRS-46: the status tool is the workspace report: a projects array with
+// tech, git and notes, the current project marked, and the API state. The
+// home directory is a temp dir, so no saved token: "not logged in".
+func TestStatusToolReportsWorkspace(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("GEARS_API", "")
+	root := t.TempDir()
+	res, err := project.Init(root, "ws", "WS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"alpha", "beta"} {
+		dir := filepath.Join(root, "projects", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v %s", err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "projects", "alpha", "go.mod"), []byte("module example.com/alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := project.Scan(res.Project, nil); err != nil {
+		t.Fatal(err)
+	}
+	cur := project.Current(res.Project, filepath.Join(root, "projects", "beta"))
+	if cur == nil {
+		t.Fatal("no current project for projects/beta")
+	}
+
+	srv := New(verbs.Ctx{Project: res.Project, Agent: "tester", Current: cur}, "test")
+	ct, st := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	if _, err := srv.Connect(ctx, st, nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "t", Version: "0"}, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	r, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "status", Arguments: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tc, _ := r.Content[0].(*mcp.TextContent)
+	if r.IsError {
+		t.Fatal(tc.Text)
+	}
+	var out verbs.StatusOut
+	if err := json.Unmarshal([]byte(tc.Text), &out); err != nil {
+		t.Fatalf("%v %s", err, tc.Text)
+	}
+	if out.API.State != verbs.APINotLoggedIn {
+		t.Errorf("api: %+v", out.API)
+	}
+	if len(out.Projects) != 2 {
+		t.Fatalf("projects: %s", tc.Text)
+	}
+	a, b := out.Projects[0], out.Projects[1]
+	if a.Slug != "alpha" || a.Tech.Kind != "Go" || a.Current || a.Git == nil || !a.Listed {
+		t.Errorf("alpha: %+v", a)
+	}
+	if b.Slug != "beta" || !b.Current || b.Tech.Kind != "empty" || b.Git == nil {
+		t.Errorf("beta: %+v", b)
+	}
+}

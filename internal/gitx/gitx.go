@@ -6,6 +6,7 @@ package gitx
 
 import (
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -133,4 +134,64 @@ func NormalizeRemote(r string) string {
 	}
 	r = strings.Replace(r, ":", "/", 1)
 	return strings.ToLower(strings.TrimSuffix(r, "/"))
+}
+
+// Snap is a repository at a glance, read without touching the network or
+// the index: what status --porcelain=v2 --branch and log -1 report.
+type Snap struct {
+	Branch   string // "" when detached
+	Detached bool
+	Upstream string // "" when the branch tracks nothing
+	Ahead    int
+	Behind   int
+	Dirty    int // changed, staged, untracked and conflicted paths
+	Head     string
+	Subject  string
+	At       time.Time // committer time of HEAD; zero with no commits
+}
+
+// Snapshot reads a repository's branch, upstream counts, dirty paths and
+// last commit. Ahead/behind are against the remote-tracking ref as of the
+// last fetch; nothing is fetched. ok is false when dir is not a repository.
+func Snapshot(dir string) (Snap, bool) {
+	var s Snap
+	// The two reads are independent; run them at once.
+	logc := make(chan string, 1)
+	go func() {
+		out, _ := run(dir, "log", "-1", "--format=%h%x00%cI%x00%s")
+		logc <- out
+	}()
+	out, ok := run(dir, "--no-optional-locks", "status", "--porcelain=v2", "--branch")
+	log := <-logc
+	if !ok {
+		return s, false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case line == "":
+		case strings.HasPrefix(line, "# branch.head "):
+			s.Branch = strings.TrimPrefix(line, "# branch.head ")
+			if s.Branch == "(detached)" {
+				s.Branch, s.Detached = "", true
+			}
+		case strings.HasPrefix(line, "# branch.upstream "):
+			s.Upstream = strings.TrimPrefix(line, "# branch.upstream ")
+		case strings.HasPrefix(line, "# branch.ab "):
+			f := strings.Fields(strings.TrimPrefix(line, "# branch.ab "))
+			if len(f) == 2 {
+				s.Ahead, _ = strconv.Atoi(strings.TrimPrefix(f[0], "+"))
+				s.Behind, _ = strconv.Atoi(strings.TrimPrefix(f[1], "-"))
+			}
+		case strings.HasPrefix(line, "#"):
+		default:
+			s.Dirty++
+		}
+	}
+	if log != "" {
+		if f := strings.SplitN(log, "\x00", 3); len(f) == 3 {
+			s.Head, s.Subject = f[0], f[2]
+			s.At, _ = time.Parse(time.RFC3339, f[1])
+		}
+	}
+	return s, true
 }

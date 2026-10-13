@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
+	"github.com/Syluxso/gears-cli/internal/project"
 	"github.com/Syluxso/gears-cli/internal/verbs"
 )
 
@@ -14,7 +16,18 @@ func bigStatus() *verbs.StatusOut {
 	out := &verbs.StatusOut{Project: "gears", ProjectID: "01a1-proj", Prefix: "GRS", Agent: "claude-local",
 		Cards:     verbs.CardStats{Open: 10, ByState: []verbs.CardState{{Name: "Backlog", Count: 6, Default: true}, {Name: "In Progress", Count: 4}}},
 		Artifacts: verbs.ArtifactStats{Total: 5, ByPrefix: map[string]int{"free": 5}},
-		Runs:      []verbs.RunSummary{}, NextAction: "work the desk: 16 open item(s)"}
+		Runs:      []verbs.RunSummary{}, NextAction: "work the desk: 16 open item(s)", IsWorkspace: true,
+		API: verbs.StatusAPI{State: verbs.APIOffline, Error: "unreachable"}}
+	hour := time.Now().Add(-3 * time.Hour).Format(time.RFC3339)
+	out.Projects = []verbs.StatusProject{
+		{Slug: "gears-api", Path: "projects/gears-api", Listed: true, OnDisk: true, Tech: project.Tech{Kind: "Go", Detail: "github.com/Syluxso/gears-api"},
+			Git: &verbs.StatusGit{Branch: "main", Upstream: "origin/main", Ahead: 2, Dirty: 4, Head: "abc1234", Subject: "x", CommittedAt: hour}, Notes: []string{}},
+		{Slug: "gears-cli", Path: "projects/gears-cli", Current: true, Listed: true, OnDisk: true, Tech: project.Tech{Kind: "Go"},
+			Git: &verbs.StatusGit{Branch: "main", Head: "def5678", Subject: "y", CommittedAt: hour}, Notes: []string{}},
+		{Slug: "gears-new", Path: "projects/gears-new", OnDisk: true, Tech: project.Tech{Kind: "Node/Angular"},
+			Git: &verbs.StatusGit{Branch: "master"}, Notes: []string{"unlisted, run gears projects scan"}},
+		{Slug: "gears-old", Path: "projects/gears-old", Listed: true, Notes: []string{"missing: in projects.yaml, not on disk"}},
+	}
 	for i := 0; i < 16; i++ {
 		out.Desk = append(out.Desk, verbs.DeskItem{ID: fmt.Sprintf("x-d%07d", i), Type: "handoff", From: "a", Text: fmt.Sprintf("item %d ", i) + strings.Repeat("é", 200)})
 	}
@@ -52,6 +65,12 @@ func TestStatusBrief(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
+		"workspace gears  01a1-proj  (cards GRS-n)",
+		"projects  4, 1 unlisted, 1 missing  api: offline",
+		"    gears-api  Go            main       4 dirty  3h ago     ↑2 ↓0",
+		"  ▸ gears-cli  Go            main       clean    3h ago",
+		"    gears-new  Node/Angular  master     clean    no commits unlisted, run gears…",
+		"    gears-old  -             missing: in projects.yaml, not on disk",
 		"desk      16 open",
 		"+13 more: gears desk list",
 		"cards     10 open, 4 mine, 6 ready  (Backlog 6, In Progress 4)",

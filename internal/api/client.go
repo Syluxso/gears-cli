@@ -368,6 +368,18 @@ func (c *Client) GetProject(ctx context.Context, id string) (*Project, error) {
 	return &out, nil
 }
 
+// ListProjects is the account's live projects, in one workspace when ws is
+// set.
+func (c *Client) ListProjects(ctx context.Context, ws string) ([]Project, error) {
+	var out []Project
+	path := "/api/v1/projects"
+	if ws != "" {
+		path += "?workspaceId=" + urlQuery(ws)
+	}
+	_, err := c.Do(ctx, http.MethodGet, path, nil, &out)
+	return out, err
+}
+
 func (c *Client) ListWorkspaces(ctx context.Context) ([]Workspace, error) {
 	var out []Workspace
 	_, err := c.Do(ctx, http.MethodGet, "/api/v1/workspaces", nil, &out)
