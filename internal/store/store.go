@@ -145,6 +145,14 @@ var schema = []string{
 		key   TEXT PRIMARY KEY,
 		value TEXT NOT NULL DEFAULT ''
 	)`,
+	// Tombstones: a row deleted here is gone from its table at once; its id
+	// waits here until a sync push lands the delete on the server.
+	`CREATE TABLE IF NOT EXISTS sync_deletes (
+		tbl        TEXT NOT NULL,
+		id         TEXT NOT NULL,
+		deleted_at TEXT NOT NULL,
+		PRIMARY KEY (tbl, id)
+	)`,
 	`CREATE TABLE IF NOT EXISTS session_entries (
 		id    INTEGER PRIMARY KEY,
 		at    TEXT NOT NULL,

@@ -252,16 +252,48 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 		}
 	}
 
-	total := len(in.Rows["desk_items"]) + len(in.Rows["session_entries"]) + len(in.Rows["artifacts"])
+	// Deletes: tombstones left by a local delete, pushed until the server
+	// takes them. A delete the server has no row for is skipped, not failed,
+	// so a row deleted before it was ever pushed clears too.
+	tombs, err := db.Query(`SELECT tbl, id FROM sync_deletes`)
+	if err != nil {
+		return err
+	}
+	nDeletes := 0
+	for tombs.Next() {
+		var tbl, id string
+		if err := tombs.Scan(&tbl, &id); err != nil {
+			tombs.Close()
+			return err
+		}
+		if in.Deletes == nil {
+			in.Deletes = map[string][]string{}
+		}
+		in.Deletes[tbl] = append(in.Deletes[tbl], id)
+		nDeletes++
+	}
+	tombs.Close()
+
+	total := len(in.Rows["desk_items"]) + len(in.Rows["session_entries"]) + len(in.Rows["artifacts"]) + nDeletes
 	if total > 0 {
 		out, err := c.Push(ctx, ws, in)
 		if err != nil {
 			return fmt.Errorf("push: %w", err)
 		}
 		r.Pushed, r.Skipped, r.Failed = out.Applied, out.Skipped, out.Failed
+		failed := map[string]bool{}
 		for _, res := range out.Results {
 			if res.Error != "" {
+				failed[res.Table+"/"+res.ID] = true
 				r.Notes = append(r.Notes, fmt.Sprintf("push %s %s: %s", res.Table, short(res.ID), res.Error))
+			}
+		}
+		for tbl, ids := range in.Deletes {
+			for _, id := range ids {
+				if failed[tbl+"/"+id] {
+					continue
+				}
+				_, _ = db.Exec(`DELETE FROM sync_deletes WHERE tbl = ? AND id = ?`, tbl, id)
 			}
 		}
 	}
@@ -383,8 +415,8 @@ func apply(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, c
 			CreatedAt, UpdatedAt                                         time.Time
 		}
 		if ch.Deleted {
-			_, err := db.Exec(`DELETE FROM artifacts WHERE id = ?`, ch.ID)
-			return true, err
+			// Row and file together, or Reconcile would re-adopt the file.
+			return true, artifact.Forget(db, p, ch.ID)
 		}
 		if err := json.Unmarshal(ch.Row, &a); err != nil {
 			return false, err
@@ -392,6 +424,12 @@ func apply(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, c
 		// Only this project's artifacts land in this cache (or workspace-level ones).
 		mine := a.ProjectID == nil || *a.ProjectID == "" || *a.ProjectID == p.ID
 		if !mine {
+			return false, nil
+		}
+		// Deleted here and the delete not yet pushed: do not bring it back.
+		var tomb int
+		_ = db.QueryRow(`SELECT COUNT(*) FROM sync_deletes WHERE tbl = 'artifacts' AND id = ?`, a.ID).Scan(&tomb)
+		if tomb > 0 {
 			return false, nil
 		}
 		file := a.Prefix + "--" + a.Slug + artifact.Ext(a.Prefix)

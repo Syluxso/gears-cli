@@ -42,7 +42,7 @@ instead of inventing structure.
 		if emit(out) {
 			return nil
 		}
-		fmt.Printf("%s  %s\n", short(out.ID), out.Path)
+		fmt.Printf("%s  %s\n", tail(out.ID), out.Path)
 		return nil
 	},
 }
@@ -78,7 +78,7 @@ var artifactListCmd = &cobra.Command{
 			if len(a.Tags) > 0 {
 				tags = " #" + strings.Join(a.Tags, " #")
 			}
-			fmt.Printf("%s  %-7s %-48s %s%s\n", short(a.ID), a.Prefix, a.File, mark, tags)
+			fmt.Printf("%s  %-7s %-48s %s%s\n", tail(a.ID), a.Prefix, a.File, mark, tags)
 		}
 		return nil
 	},
@@ -113,6 +113,34 @@ var artifactTagCmd = &cobra.Command{
 			return nil
 		}
 		fmt.Printf("%s  #%s\n", out.File, strings.Join(out.Tags, " #"))
+		return nil
+	},
+}
+
+var artifactDeleteCmd = &cobra.Command{
+	Use:   "delete <file|id|short id>",
+	Short: "Delete an artifact: row and file together",
+	Long: `Removes the row and the file in one step, so reconcile neither
+regenerates the file nor re-adopts it. Works offline: the delete is kept
+until the next gears sync soft-deletes it on the server, and other machines
+drop the row and the file when they sync.
+
+  gears artifact delete free--agent-handoff.md
+  gears artifact delete 3f2a9c1d`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := ctx()
+		if err != nil {
+			return err
+		}
+		out, err := verbs.ArtifactDelete(c, verbs.ArtifactDeleteIn{Artifact: args[0]})
+		if err != nil {
+			return err
+		}
+		if emit(out) {
+			return nil
+		}
+		fmt.Printf("deleted %s  %s (row and file; pushed on next gears sync)\n", tail(out.ID), out.File)
 		return nil
 	},
 }
@@ -218,6 +246,6 @@ var artifactShapesCmd = &cobra.Command{
 
 func init() {
 	artifactListCmd.Flags().StringVar(&artifactTagFilter, "tag", "", "only artifacts with this tag")
-	artifactCmd.AddCommand(artifactNewCmd, artifactListCmd, artifactTagCmd, artifactReconcileCmd, artifactValidateCmd, artifactShapesCmd)
+	artifactCmd.AddCommand(artifactNewCmd, artifactListCmd, artifactTagCmd, artifactDeleteCmd, artifactReconcileCmd, artifactValidateCmd, artifactShapesCmd)
 	root.AddCommand(artifactCmd)
 }

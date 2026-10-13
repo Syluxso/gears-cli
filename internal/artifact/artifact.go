@@ -249,14 +249,15 @@ func list(db *sql.DB, p *project.Project) ([]Artifact, error) {
 	return out, nil
 }
 
-// Find returns one artifact by file name or id.
+// Find returns one artifact by file name, id, id prefix, or the id's tail
+// (the short id listings show).
 func Find(p *project.Project, key string) (*Artifact, error) {
 	all, err := List(p)
 	if err != nil {
 		return nil, err
 	}
 	for i := range all {
-		if all[i].File == key || all[i].ID == key || strings.HasPrefix(all[i].ID, key) {
+		if all[i].File == key || all[i].ID == key || strings.HasPrefix(all[i].ID, key) || (len(key) >= 6 && strings.HasSuffix(all[i].ID, key)) {
 			return &all[i], nil
 		}
 	}
@@ -296,6 +297,94 @@ func Tag(p *project.Project, key string, changes []string) (*Artifact, error) {
 	}
 	_, _ = db.Exec(`UPDATE artifacts SET updated_at = ? WHERE id = ?`, store.Now(), a.ID)
 	return Find(p, a.File)
+}
+
+// Delete removes an artifact's row and its file in one step, so Reconcile
+// neither regenerates the file nor re-adopts it, and leaves a tombstone the
+// next sync pushes as a delete. key is a file name (or a path to one), an id,
+// or 6+ leading or trailing digits of one. Ids are UUID v7, so the leading
+// digits are a timestamp shared by artifacts made together; a key that
+// matches more than one artifact is refused rather than picking one.
+func Delete(p *project.Project, key string) (*Artifact, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, fmt.Errorf("which artifact? give a file name or id")
+	}
+	all, err := List(p)
+	if err != nil {
+		return nil, err
+	}
+	base := filepath.Base(key)
+	id := strings.ToLower(strings.TrimPrefix(key, "#"))
+	var hits []Artifact
+	for _, a := range all {
+		if a.File == base || a.ID == id {
+			hits = []Artifact{a}
+			break
+		}
+		if len(id) >= 6 && (strings.HasPrefix(a.ID, id) || strings.HasSuffix(a.ID, id)) {
+			hits = append(hits, a)
+		}
+	}
+	switch len(hits) {
+	case 0:
+		return nil, fmt.Errorf("no artifact %q", key)
+	case 1:
+	default:
+		return nil, fmt.Errorf("%q matches %d artifacts; give more of the id or the file name", key, len(hits))
+	}
+	a := hits[0]
+	db, err := store.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	if err := drop(db, p, a.ID, true); err != nil {
+		return nil, err
+	}
+	a.FilePresent = false
+	return &a, nil
+}
+
+// Forget removes the row and the file for a delete pulled from the server.
+// No tombstone: the server already has the delete.
+func Forget(db *sql.DB, p *project.Project, id string) error {
+	return drop(db, p, id, false)
+}
+
+// drop deletes the row (tags cascade) and the file in one transaction: the
+// row goes only if the file goes too, so neither half is left for Reconcile
+// to rebuild the other from.
+func drop(db *sql.DB, p *project.Project, id string, tombstone bool) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var file string
+	err = tx.QueryRow(`SELECT file FROM artifacts WHERE id = ?`, id).Scan(&file)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM artifact_tags WHERE artifact_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM artifacts WHERE id = ?`, id); err != nil {
+		return err
+	}
+	if tombstone {
+		if _, err := tx.Exec(`INSERT INTO sync_deletes (tbl, id, deleted_at) VALUES ('artifacts', ?, ?)
+			ON CONFLICT(tbl, id) DO UPDATE SET deleted_at = excluded.deleted_at`, id, store.Now()); err != nil {
+			return err
+		}
+	}
+	if err := os.Remove(filepath.Join(p.ArtifactsDir(), file)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Change is one thing Reconcile did, for the CLI to print.

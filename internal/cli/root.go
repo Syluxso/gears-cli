@@ -102,6 +102,15 @@ func short(id string) string {
 	return id
 }
 
+// tail is the short form for UUID v7 ids: the last 8 hex digits, which are
+// random. The leading digits are a timestamp shared by ids minted together.
+func tail(id string) string {
+	if len(id) > 8 {
+		return id[len(id)-8:]
+	}
+	return id
+}
+
 // hhmm renders an RFC3339 timestamp as local HH:MM.
 func hhmm(rfc string) string {
 	if rfc == "" {

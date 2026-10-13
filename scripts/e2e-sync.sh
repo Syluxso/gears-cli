@@ -7,6 +7,9 @@ CLI_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 API_DIR="$CLI_DIR/../gears-api"
 WORK="$(mktemp -d)"
 export HOME="$WORK/home"; mkdir -p "$HOME"
+# Go reads USERPROFILE, not HOME, on Windows; without this the run would
+# write the real ~/.gears/credentials.json.
+export USERPROFILE="$HOME"
 export GEARS_API="http://127.0.0.1:8221"
 PORT=8221
 
@@ -60,6 +63,26 @@ ALPHA_ID=$(grep '^id:' "$WORK/ws/projects/alpha/.gears/project.yaml" | awk '{pri
 echo "== clone answers; workspace root sees it after sync"
 ( cd "$WORK/clone/alpha" && "$G" session new --kind decision "clone decided" >/dev/null && "$G" sync >/dev/null )
 ( cd "$WORK/ws" && "$G" sync >/dev/null && "$G" session list --json | grep -q "clone decided" ) || { echo "root did not receive clone's entry"; exit 1; }
+
+echo "== artifact delete: offline in alpha, pushed on sync, clone drops row and file"
+A="$WORK/ws/projects/alpha"; C="$WORK/clone/alpha"; ART=free--doomed-note.md
+( cd "$A" && "$G" artifact new free "Doomed note" >/dev/null && "$G" sync >/dev/null )
+( cd "$C" && "$G" sync >/dev/null && "$G" artifact list | grep -q "$ART" ) || { echo "clone did not receive the artifact"; exit 1; }
+[ -f "$C/.gears/artifacts/$ART" ] || { echo "clone has no file for $ART"; exit 1; }
+ART_ID=$(cd "$A" && "$G" artifact list --json | python -c "import json,sys; print([a['id'] for a in json.load(sys.stdin)['artifacts'] if a['file']=='$ART'][0])")
+( cd "$A" && "$G" artifact delete "${ART_ID: -8}" )
+[ ! -f "$A/.gears/artifacts/$ART" ] || { echo "alpha still has the file"; exit 1; }
+( cd "$A" && "$G" artifact reconcile | grep -q "rows and files agree" ) || { echo "alpha reconcile regenerated or adopted"; exit 1; }
+( cd "$A" && "$G" artifact list --json | grep -q "$ART" ) && { echo "alpha still lists $ART"; exit 1; }
+( cd "$A" && "$G" sync --json | python -c "import json,sys; r=json.load(sys.stdin); assert r['failed']==0, r; print('ok: delete pushed', r)" )
+TOKEN=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['hosts']['$GEARS_API']['token'])" "$HOME/.gears/credentials.json")
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$GEARS_API/api/v1/artifacts/$ART_ID")
+[ "$CODE" = "404" ] || { echo "API still serves the artifact ($CODE)"; exit 1; }
+( cd "$C" && "$G" sync >/dev/null )
+[ ! -f "$C/.gears/artifacts/$ART" ] || { echo "clone kept the file after the pulled delete"; exit 1; }
+( cd "$C" && "$G" artifact reconcile | grep -q "rows and files agree" ) || { echo "clone reconcile regenerated or adopted"; exit 1; }
+( cd "$C" && "$G" artifact list --json | grep -q "$ART" ) && { echo "clone still lists $ART"; exit 1; }
+echo "ok: row and file gone on both machines; API row soft-deleted"
 
 echo "== second sync is a no-op"
 ( cd "$WORK/ws/projects/alpha" && "$G" sync --json | python -c "import json,sys; r=json.load(sys.stdin); assert r['pushed']==0 and r['failed']==0, r; print('ok: pushed', r['pushed'], 'pulled', r['pulled'])" )

@@ -434,6 +434,21 @@ func ArtifactTag(c Ctx, in ArtifactTagIn) (*Artifact, error) {
 	return &o, nil
 }
 
+type ArtifactDeleteIn struct {
+	Artifact string `json:"artifact" jsonschema:"File name, id, or id prefix (the 8-char short id works)."`
+}
+
+// ArtifactDelete removes the row and the file together and records the
+// delete for the next sync, which soft-deletes it on the server.
+func ArtifactDelete(c Ctx, in ArtifactDeleteIn) (*Artifact, error) {
+	a, err := artifact.Delete(c.Project, in.Artifact)
+	if err != nil {
+		return nil, err
+	}
+	o := artifactOut(*a)
+	return &o, nil
+}
+
 type ArtifactReconcileIn struct{}
 
 type ReconcileChange struct {

@@ -49,6 +49,7 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 	add(s, c, "artifact_new", "Create an artifact: the row first, then a file seeded from its shape. Prefixes: adr (numbered, never rewritten), story, idea, index, free. The new file fails its shape until its sections are filled; fill it, then artifact_validate.", verbs.ArtifactNew)
 	add(s, c, "artifact_list", "All artifacts with tags and shape status. Reconciles rows and files first. Filter by tag.", verbs.ArtifactList)
 	add(s, c, "artifact_tag", "Add or remove tags on an artifact. Tags live on the row, never in the file.", verbs.ArtifactTag)
+	add(s, c, "artifact_delete", "Delete an artifact: the row and the file together, so reconcile neither regenerates nor re-adopts it. Works offline; the next sync soft-deletes it on the server and other machines drop row and file. Give the file name, id, or short id.", verbs.ArtifactDelete)
 	add(s, c, "artifact_reconcile", "Make rows and files agree: regenerate missing files from rows, adopt files with no row, update rows whose file changed (file wins for body, title, status).", verbs.ArtifactReconcile)
 	add(s, c, "artifact_validate", "Check artifacts against the shapes in force. Returns problems per file.", verbs.ArtifactValidate)
 	add(s, c, "artifact_shapes", "The shapes in force: required front matter, required sections, minimum body, and whether built-in or a project override.", verbs.Shapes)
