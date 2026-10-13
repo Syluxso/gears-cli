@@ -9,8 +9,14 @@ would produce `gears-cli`):
 
     go build -o "$(go env GOPATH)/bin/gears" .
 
-Then in any repo: `gears init`, `gears status`. For an MCP harness, point it at
-`gears run --dir <repo>` with `GEARS_AGENT` set to the agent's label.
+Then at a workspace root (the directory holding `projects/<repo>`): `gears init`,
+`gears status`. The root is the only `.gears/`; init records the git repos
+under `projects/` in `.gears/projects.yaml` (`gears projects scan` to refresh,
+`gears projects list` to print). Commands run inside `projects/<repo>` resolve
+to the root and tag session entries and new artifacts with that project;
+`gears init` there is refused. A standalone clone with no workspace above it
+still runs `gears init` on its own. For an MCP harness, point it at
+`gears run --dir <workspace root>` with `GEARS_AGENT` set to the agent's label.
 
 Account and sync (slice 1):
 

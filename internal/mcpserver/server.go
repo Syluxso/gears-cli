@@ -54,6 +54,8 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 	add(s, c, "artifact_validate", "Check artifacts against the shapes in force. Returns problems per file.", verbs.ArtifactValidate)
 	add(s, c, "artifact_shapes", "The shapes in force: required front matter, required sections, minimum body, and whether built-in or a project override.", verbs.Shapes)
 
+	add(s, c, "projects_list", "The workspace's projects from .gears/projects.yaml: id, slug, path (projects/<repo>), git remote, and missing when the repo is gone. current is the project this server runs in. Pass a slug or id as project on session_new or artifact_new to tag work against another one.", verbs.ProjectsList)
+	add(s, c, "projects_scan", "Scan <workspace root>/projects/*/ for git repos and record them in .gears/projects.yaml. New repos take the id gears-api already holds for their remote (when logged in), else a fresh one that sync reconciles; repos that are gone are marked missing, never dropped. Only the workspace root has .gears.", verbs.ProjectsScan)
 	add(s, c, "sync", "Push local desk, session and artifact changes to gears-api, then pull and apply changes from the workspace. Needs gears login first.", verbs.Sync)
 	add(s, c, "whoami", "Which API host, whether the saved device token works, and the workspace this project syncs to.", verbs.Whoami)
 	add(s, c, "export", "Dump the local record (every table, every row) as JSON, or to a file with out. The record is not committed; this is its backup until sync exists.", verbs.Export)

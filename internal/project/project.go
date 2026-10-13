@@ -146,6 +146,20 @@ func Find(start string) (*Project, error) {
 	}
 }
 
+// UnderBindingError is Init refusing to bind a directory that already sits
+// under a binding: no nested .gears is ever created.
+type UnderBindingError struct {
+	Dir, Root string
+	Workspace bool
+}
+
+func (e *UnderBindingError) Error() string {
+	if e.Workspace {
+		return fmt.Sprintf("%s is inside the Gears workspace at %s, which is the only .gears; projects are recorded in its manifest. Run gears projects scan at %s", e.Dir, e.Root, e.Root)
+	}
+	return fmt.Sprintf("%s is inside the Gears binding at %s; no .gears is created below it. Run gears commands from there", e.Dir, e.Root)
+}
+
 // InitResult reports what Init did, one line per action, for the CLI to print.
 type InitResult struct {
 	Project *Project
@@ -214,6 +228,16 @@ func Init(dir, slug, prefix string) (*InitResult, error) {
 	res := &InitResult{}
 	gears := filepath.Join(dir, Dir)
 	bindingPath := filepath.Join(gears, BindingFile)
+
+	// No .gears below a binding, ever (GRS-40): a repo inside a workspace is
+	// a project in the root's manifest, not a binding of its own.
+	if _, err := os.Stat(bindingPath); err != nil {
+		if parent := filepath.Dir(dir); parent != dir {
+			if anc, err := Find(parent); err == nil {
+				return nil, &UnderBindingError{Dir: dir, Root: anc.Root, Workspace: anc.IsWorkspace()}
+			}
+		}
+	}
 
 	// Binding.
 	var p Project
