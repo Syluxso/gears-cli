@@ -15,7 +15,10 @@ export USERPROFILE="$HOME"
 export GEARS_API="http://127.0.0.1:8221"
 PORT=8221
 
-cleanup() { [ -n "${API_PID:-}" ] && kill "$API_PID" 2>/dev/null || true; }
+cleanup() {
+  [ -n "${WATCH_PID:-}" ] && kill "$WATCH_PID" 2>/dev/null || true
+  [ -n "${API_PID:-}" ] && kill "$API_PID" 2>/dev/null || true
+}
 trap cleanup EXIT
 fail() { echo "FAIL: $*"; exit 1; }
 
@@ -25,14 +28,19 @@ G="$WORK/gears.exe"
 
 ORG=$("$G" --version >/dev/null; python -c "import uuid;print(uuid.uuid4())")
 TEN=$(python -c "import uuid;print(uuid.uuid4())")
-GEARS_API_PORT=$PORT PORT=$PORT \
-DB_URL='postgres://db:db@127.0.0.1:5441/gears?sslmode=disable' \
-GEARS_PAT_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
-GEARS_DEV_TENANT="$ORG:$TEN" BYZ_KAFKA_ENABLED=false \
-"$WORK/gears-api.exe" > "$WORK/api.log" 2>&1 &
-API_PID=$!
-for i in $(seq 1 30); do curl -sf "$GEARS_API/healthz" >/dev/null 2>&1 && break; sleep 0.5; done
-curl -sf "$GEARS_API/healthz" >/dev/null || { echo "api did not start"; cat "$WORK/api.log"; exit 1; }
+# start_api: this script's own throwaway gears-api (GRS-51 stops and
+# restarts it to prove an offline write queues).
+start_api() {
+  GEARS_API_PORT=$PORT PORT=$PORT \
+  DB_URL='postgres://db:db@127.0.0.1:5441/gears?sslmode=disable' \
+  GEARS_PAT_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  GEARS_DEV_TENANT="$ORG:$TEN" BYZ_KAFKA_ENABLED=false \
+  "$WORK/gears-api.exe" >> "$WORK/api.log" 2>&1 &
+  API_PID=$!
+  for i in $(seq 1 30); do curl -sf "$GEARS_API/healthz" >/dev/null 2>&1 && break; sleep 0.5; done
+  curl -sf "$GEARS_API/healthz" >/dev/null || { echo "api did not start"; cat "$WORK/api.log"; exit 1; }
+}
+start_api
 
 WS="$WORK/ws"; A="$WS/projects/alpha"; C="$WORK/clone/alpha"
 # Workspace root (not itself a repo, like ddev/gears) with one project repo.
@@ -204,9 +212,11 @@ print('ok: status', len(ps), 'projects, api', s['api']['state'], s['api']['proje
 
 echo "== GRS-47: cards: two machines mint the same number offline; the API's numbers win on both"
 # Both caches have synced (states adopted, no cards yet), so both propose 1.
+# Card writes push at once since GRS-51; GEARS_CARD_SYNC=off keeps these two
+# local, as two machines offline would.
 newcard() { "$G" card new "$1" -t task --set "task.what=$1" --set task.soThat=e2e --accept "syncs, proven by e2e-sync" --tag e2e --json | python -c "import json,sys; print(json.load(sys.stdin)['key'])"; }
-K_ROOT=$(cd "$WS" && newcard "Root card")
-K_CLONE=$(cd "$C" && newcard "Clone card")
+K_ROOT=$(cd "$WS" && GEARS_CARD_SYNC=off newcard "Root card")
+K_CLONE=$(cd "$C" && GEARS_CARD_SYNC=off newcard "Clone card")
 [ "$K_ROOT" = "WS-1" ] && [ "$K_CLONE" = "WS-1" ] || fail "offline proposals: root $K_ROOT clone $K_CLONE (want WS-1 both)"
 echo "ok: both caches proposed WS-1 offline"
 ( cd "$WS" && "$G" sync --json ) | python -c "import json,sys; r=json.load(sys.stdin); assert r['cards']=='synced' and r['failed']==0, r; print('ok: root sync cards', r['cards'])"
@@ -255,6 +265,56 @@ K3=$(cd "$WS" && newcard "After delete")
 ( cd "$WS" && "$G" sync >/dev/null ) && ( cd "$C" && "$G" sync >/dev/null )
 [ "$(cd "$C" && keys)" = "WS-2=Clone_card WS-3=After_delete" ] || fail "clone after delete: $(cd "$C" && keys)"
 echo "ok: deletes propagate both ways; WS-3 is new on both"
+
+echo "== GRS-51: card new pushes at once: the API's key, on the API, no gears sync"
+DBC="$C/.gears/.gearbox/local.db"
+sstate() { python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); r=c.execute(\"SELECT value FROM sync_state WHERE key=?\",(sys.argv[2],)).fetchone(); print(r[0] if r else '')" "$1" "$2"; }
+K4=$(cd "$WS" && newcard "Instant card")
+[ "$K4" = "WS-4" ] || fail "write-through key: $K4 (want WS-4)"
+curl -s -H "Authorization: Bearer $TOKEN" "$GEARS_API/api/v1/workspaces/$WS_ID/board" | python -c "import json,sys; k=[c['key'] for c in json.load(sys.stdin)['cards']]; assert 'WS-4' in k, k; print('ok: WS-4 on the API board right after card new', k)"
+
+echo "== GRS-51: the clone watches the board; a move on the root lands in the clone's cache within seconds"
+CUR_BEFORE=$(sstate "$DBC" cursor)
+( cd "$C" && exec "$G" watch > "$WORK/watch.out" 2> "$WORK/watch.err" ) &
+WATCH_PID=$!
+for i in $(seq 1 40); do grep -q "board stream connected" "$WORK/watch.err" 2>/dev/null && break; sleep 0.25; done
+grep -q "board stream connected" "$WORK/watch.err" || { cat "$WORK/watch.err"; fail "watch did not connect"; }
+for i in $(seq 1 40); do [ "$(cd "$C" && GEARS_CARD_SYNC=off "$G" card list --all --json | python -c "import json,sys; print(any(c['key']=='WS-4' for c in json.load(sys.stdin)['cards']))")" = True ] && break; sleep 0.25; done
+echo "ok: watch connected; $(cat "$WORK/watch.err" | tr '\n' ' ')"
+T0=$(python -c "import time; print(time.time())")
+( cd "$WS" && "$G" card move WS-4 Testing >/dev/null )
+cache_state() { ( cd "$C" && GEARS_CARD_SYNC=off "$G" card show WS-4 --json ) | python -c "import json,sys; print(json.load(sys.stdin)['state'])"; }
+for i in $(seq 1 40); do [ "$(cache_state)" = "Testing" ] && break; sleep 0.25; done
+[ "$(cache_state)" = "Testing" ] || { cat "$WORK/watch.err" "$WORK/watch.out"; fail "clone cache did not get the move"; }
+python -c "import time; print('ok: clone cache has WS-4 in Testing %.1fs after the move (no gears sync, read with card sync off)' % (time.time()-$T0))"
+for i in $(seq 1 20); do grep -q "WS-4 moved → Testing" "$WORK/watch.out" && break; sleep 0.25; done
+grep -q "WS-4 moved → Testing" "$WORK/watch.out" || { cat "$WORK/watch.out"; fail "watch did not print the move"; }
+echo "ok: watch printed: $(grep "WS-4 moved" "$WORK/watch.out" | head -1)"
+[ "$(sstate "$DBC" cursor)" = "$CUR_BEFORE" ] || fail "the card stream moved the main cursor ($CUR_BEFORE -> $(sstate "$DBC" cursor))"
+[ -n "$(sstate "$DBC" cards_cursor)" ] || fail "no cards_cursor"
+echo "ok: main cursor untouched ($CUR_BEFORE); cards_cursor $(sstate "$DBC" cards_cursor)"
+kill "$WATCH_PID" 2>/dev/null || true; wait "$WATCH_PID" 2>/dev/null || true; WATCH_PID=""
+sleep 0.5
+kill -0 "$WATCH_PID" 2>/dev/null && fail "watcher still running"
+# Only this script's binary (under $WORK) counts; never a gears.exe elsewhere.
+LEFT=$(powershell -NoProfile -Command "@(Get-Process gears -ErrorAction SilentlyContinue | Where-Object { \$_.Path -like '$(cygpath -w "$WORK")*' }).Count" 2>/dev/null | tr -d '\r')
+[ "${LEFT:-0}" = "0" ] || fail "watcher still running ($LEFT)"
+echo "ok: watcher stopped"
+
+echo "== GRS-51: without a watcher, a card read pulls first (backstop)"
+( cd "$WS" && "$G" card comment WS-4 "seen by the clone on read" >/dev/null )
+( cd "$C" && "$G" card show WS-4 --json ) | python -c "import json,sys; c=json.load(sys.stdin); assert any(x['body']=='seen by the clone on read' for x in c['comments']) and not c.get('stale'), c; print('ok: clone card show pulled the comment first')"
+
+echo "== GRS-51: offline write stands locally with one note, then goes up"
+kill "$API_PID"; wait "$API_PID" 2>/dev/null || true; API_PID=""
+( cd "$WS" && "$G" card comment WS-4 "written while the API was down" > "$WORK/off.out" 2> "$WORK/off.err" ) || fail "offline write failed"
+grep -q "written while the API was down" "$WORK/off.out" || fail "offline comment not printed"
+[ "$(wc -l < "$WORK/off.err")" -eq 1 ] && grep -q "^gears: saved locally; not pushed" "$WORK/off.err" || { cat "$WORK/off.err"; fail "offline note"; }
+echo "ok: offline note: $(cat "$WORK/off.err")"
+( cd "$WS" && "$G" card list --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o.get('stale') is True, o.get('stale'); print('ok: offline card list answers from the cache, stale: true')"
+start_api
+( cd "$WS" && "$G" sync --json ) | python -c "import json,sys; r=json.load(sys.stdin); assert r['failed']==0, r; print('ok: sync after the outage pushed', r['pushed'])"
+( cd "$C" && "$G" card show WS-4 --json ) | python -c "import json,sys; c=json.load(sys.stdin); assert any(x['body']=='written while the API was down' for x in c['comments']), c['comments']; print('ok: the queued comment reached the clone')"
 
 echo "== second sync is a no-op"
 # The push window includes the last push's second (stamps are to the

@@ -65,7 +65,7 @@ func ctxAt(dir string) (verbs.Ctx, error) {
 	if agent == "" {
 		agent = session.DefaultAgent()
 	}
-	return verbs.Ctx{Project: p, Agent: agent, Current: project.Current(p, dir)}, nil
+	return verbs.Ctx{Project: p, Agent: agent, Current: project.Current(p, dir), Notes: os.Stderr}, nil
 }
 
 // emit prints v as JSON when --json is set and returns true; otherwise it

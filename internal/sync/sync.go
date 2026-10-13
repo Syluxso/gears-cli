@@ -592,9 +592,15 @@ func pull(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 		}
 		r.Cursor = cursor
 		if !out.More || len(out.Changes) == 0 {
-			return nil
+			break
 		}
 	}
+	// Every card change up to the main cursor is applied now, so the card
+	// stream (GRS-51) may start there; it never goes back.
+	if cs.ok {
+		return raiseCardsCursor(db, cursor)
+	}
+	return nil
 }
 
 func apply(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ch api.Change, r *Report) (bool, error) {

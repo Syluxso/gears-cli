@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -402,6 +403,9 @@ type PullOut struct {
 	Cursor  int64    `json:"cursor"`
 	Changes []Change `json:"changes"`
 	More    bool     `json:"more"`
+	// Tables echoes a pull's table filter (GRS-51). Asked for tables and
+	// got none back: the API predates the filter and sent everything.
+	Tables []string `json:"tables,omitempty"`
 }
 
 func (c *Client) Pull(ctx context.Context, workspaceID string, cursor int64) (*PullOut, error) {
@@ -409,6 +413,78 @@ func (c *Client) Pull(ctx context.Context, workspaceID string, cursor int64) (*P
 	_, err := c.Do(ctx, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/sync?cursor=%d", workspaceID, cursor), nil, &out)
 	return &out, err
 }
+
+// PullTables pulls only the named tables ("cards" is the card tables) after
+// a cursor that belongs to that filter (GRS-51). Check out.Tables: an API
+// that ignores the filter answers without it.
+func (c *Client) PullTables(ctx context.Context, workspaceID string, cursor int64, tables string) (*PullOut, error) {
+	var out PullOut
+	_, err := c.Do(ctx, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/sync?cursor=%d&tables=%s", workspaceID, cursor, urlQuery(tables)), nil, &out)
+	return &out, err
+}
+
+// StreamError is a board stream that did not open: the status and the
+// start of the body.
+type StreamError struct {
+	Status int
+	Body   string
+}
+
+func (e *StreamError) Error() string {
+	if e.Body != "" {
+		return fmt.Sprintf("board stream: %d %s", e.Status, e.Body)
+	}
+	return fmt.Sprintf("board stream: %d", e.Status)
+}
+
+// Permanent reports an answer retrying will not change: no such route or
+// workspace (404, 405, 501, an API from before GRS-48) or a token the API
+// refuses (401, 403).
+func (e *StreamError) Permanent() bool {
+	switch e.Status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+		return true
+	}
+	return false
+}
+
+// BoardEvents opens the workspace's live board (GRS-48): Server-Sent Events,
+// read as a plain GET with the bearer in Authorization (there is no
+// query-string token). The caller reads the body line by line and closes
+// it; cancelling ctx ends the stream. No client timeout: the stream is
+// long-lived and the server pings every 25s.
+func (c *Client) BoardEvents(ctx context.Context, workspaceID string) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Host+"/api/v1/workspaces/"+workspaceID+"/board/events", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	c.auth(req)
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s unreachable: %w", c.Host, err)
+	}
+	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		resp.Body.Close()
+		status := resp.StatusCode
+		if status == http.StatusOK {
+			status = http.StatusNotImplemented // a 200 that is not a stream: no live board here
+		}
+		return nil, &StreamError{Status: status, Body: strings.TrimSpace(string(raw))}
+	}
+	return resp.Body, nil
+}
+
+// streamClient has no overall timeout (the board stream is long-lived);
+// connecting and the response headers still have bounds.
+var streamClient = &http.Client{Transport: &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ResponseHeaderTimeout: 15 * time.Second,
+	IdleConnTimeout:       90 * time.Second,
+}}
 
 type PushIn struct {
 	Rows    map[string][]any    `json:"rows"`

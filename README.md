@@ -25,6 +25,29 @@ Account and sync (slice 1):
     gears sync                               # push desk, session, artifact changes; pull and apply
     gears whoami                             # host, token state, workspace this syncs to
     gears logout                             # revoke the device, forget the token
+    gears watch                              # follow the board live, one line per change
+
+Cards sync immediately (GRS-51), unlike desk, sessions and artifacts:
+
+- Every card write (CLI or MCP: new, update, move, claim, comment, tag,
+  link, checklist, close, reopen, delete, states) pushes the board's
+  pending rows at once (3s timeout) and takes the API's number and key, so
+  `gears card new` prints the key the API gave. Offline, not logged in, or
+  an API error: the write stands locally, one `gears: saved locally; not
+  pushed (...)` line on stderr (a `sync: {pushed: false, note}` field in the
+  MCP result), and the rows go up with the next write or `gears sync`.
+- `gears run` holds the workspace's live board stream open
+  (`board/events`, device token) and pulls the card tables a moment after
+  each event; `gears watch` does the same in the foreground. Reconnects with
+  backoff (3s to 5m); stops for good, logged once on stderr, when the API
+  has no live board (404/405/501) or refuses the token (401/403).
+- Card reads (`card list`, `card show`, the cards in `status`, and their MCP
+  tools) pull the card tables first (1.5s timeout) unless the stream is
+  open; on failure they answer from the cache with `"stale": true`.
+- Card-only pulls use `GET sync?tables=cards` and their own `cards_cursor`
+  (the main cursor is the full sync's); an API that ignores `tables` gets a
+  full pull instead. Needs one `gears sync` first. `GEARS_CARD_SYNC=off`
+  turns all of this off.
 
 `GEARS_API` or `--api` picks the host (default api.gearsos.com). `.gears/` is
 never committed: project.yaml is the binding, the rest is cache; the record is

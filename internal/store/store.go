@@ -24,7 +24,11 @@ func Open(p *project.Project) (*sql.DB, error) {
 	// busy_timeout: the MCP server dispatches tool calls concurrently and each
 	// verb opens its own handle, so a writer must wait for another rather
 	// than fail with SQLITE_BUSY. WAL lets readers run during a write.
-	dsn := "file:" + filepath.ToSlash(p.LocalPath()) + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
+	// _txlock=immediate (GRS-51): a transaction takes the write lock when it
+	// begins, so busy_timeout covers it. A deferred one that reads and then
+	// writes fails at once with "database is locked" when another process
+	// (gears run's board stream, a CLI write) committed in between.
+	dsn := "file:" + filepath.ToSlash(p.LocalPath()) + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err

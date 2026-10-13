@@ -8,6 +8,7 @@ package verbs
 
 import (
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,10 @@ type Ctx struct {
 	Project *project.Project
 	Agent   string
 	Current *project.ManifestEntry
+	// Notes receives one-line notes a verb has for a person (the CLI sets
+	// stderr): a card write that could not reach gears-api, for one. The
+	// MCP server leaves it nil; its results carry the note.
+	Notes io.Writer
 }
 
 // projectFor resolves the project a write is about: an explicit key (id,
@@ -104,6 +109,8 @@ type StatusOut struct {
 // CardStats is the board at a glance: open cards by state, in board order,
 // and the ready cards (default state) an agent can pick up.
 type CardStats struct {
+	// Stale: the API did not answer the cards pull in time (GRS-51).
+	Stale   bool        `json:"stale,omitempty"`
 	Open    int         `json:"open"`
 	ByState []CardState `json:"byState"`
 	Mine    []CardLine  `json:"mine"`  // assigned to this agent, not completed
@@ -144,6 +151,10 @@ func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 		ws <- wsResult{p, a, err}
 	}()
 	defer func() { <-ws }() // never leave it running past an early return
+	// The cards section reads after a backstop pull (GRS-51), which runs
+	// alongside the desk, runs and git work.
+	down := make(chan bool, 1) // buffered: an early return never strands it
+	go func() { down <- c.cardsDown() }()
 
 	items, err := desk.List(c.Project, desk.Filter{Agent: out.Agent})
 	if err != nil {
@@ -161,6 +172,7 @@ func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 		out.Runs = append(out.Runs, runSummary(r))
 	}
 
+	out.Cards.Stale = <-down
 	cards, err := card.List(c.Project, card.Filter{})
 	if err != nil {
 		return nil, err

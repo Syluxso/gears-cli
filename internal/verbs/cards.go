@@ -40,6 +40,8 @@ type Card struct {
 	// ClosedAt is set while the card is closed (off the board, GRS-50).
 	ClosedAt       string `json:"closedAt,omitempty"`
 	StateChangedAt string `json:"stateChangedAt,omitempty"`
+	// Sync is set on a write: whether it reached gears-api at once (GRS-51).
+	Sync *CardSync `json:"sync,omitempty"`
 }
 
 func cardOut(c card.Card) Card {
@@ -52,10 +54,11 @@ func cardOut(c card.Card) Card {
 }
 
 type CardComment struct {
-	ID        string `json:"id"`
-	Agent     string `json:"agent"`
-	Body      string `json:"body"`
-	CreatedAt string `json:"createdAt"`
+	ID        string    `json:"id"`
+	Agent     string    `json:"agent"`
+	Body      string    `json:"body"`
+	CreatedAt string    `json:"createdAt"`
+	Sync      *CardSync `json:"sync,omitempty"`
 }
 
 type CardLink struct {
@@ -113,6 +116,9 @@ type CardRun struct {
 
 type CardFull struct {
 	Card
+	// Stale is true when the API did not answer the read's pull in time and
+	// this is the cache as it was (GRS-51).
+	Stale      bool            `json:"stale,omitempty"`
 	Run        *CardRun        `json:"run,omitempty"`
 	BlockedBy  []string        `json:"blockedBy"`
 	Comments   []CardComment   `json:"comments"`
@@ -190,7 +196,7 @@ func CardNew(c Ctx, in CardNewIn) (*Card, error) {
 	if err != nil {
 		return nil, err
 	}
-	o := cardOut(*out)
+	o := c.pushed(out)
 	return &o, nil
 }
 
@@ -224,6 +230,8 @@ type CardState struct {
 }
 
 type CardListOut struct {
+	// Stale: the API did not answer the read's pull in time (GRS-51).
+	Stale  bool           `json:"stale,omitempty"`
 	Prefix string         `json:"prefix"`
 	States []CardState    `json:"states"`
 	Tags   map[string]int `json:"tags"`
@@ -235,6 +243,7 @@ func CardList(c Ctx, in CardListIn) (*CardListOut, error) {
 	if in.Assignee == "me" {
 		in.Assignee = c.agent()
 	}
+	stale := c.cardsDown()
 	sts, err := card.States(c.Project)
 	if err != nil {
 		return nil, err
@@ -252,7 +261,7 @@ func CardList(c Ctx, in CardListIn) (*CardListOut, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := &CardListOut{Prefix: c.Project.Prefix, States: []CardState{}, Tags: tags, Cards: []Card{}}
+	out := &CardListOut{Stale: stale, Prefix: c.Project.Prefix, States: []CardState{}, Tags: tags, Cards: []Card{}}
 	counts := map[string]int{}
 	for _, cd := range cards {
 		counts[cd.State]++
@@ -277,7 +286,7 @@ func CardClose(c Ctx, in CardCloseIn) (*Card, error) {
 	if err != nil {
 		return nil, err
 	}
-	o := cardOut(*cd)
+	o := c.pushed(cd)
 	return &o, nil
 }
 
@@ -287,7 +296,7 @@ func CardReopen(c Ctx, in CardCloseIn) (*Card, error) {
 	if err != nil {
 		return nil, err
 	}
-	o := cardOut(*cd)
+	o := c.pushed(cd)
 	return &o, nil
 }
 
@@ -298,11 +307,14 @@ type CardKeyIn struct {
 // CardShow is the whole card: sections, comments, links, checklists,
 // children and the activity trail. Read it before picking a card up.
 func CardShow(c Ctx, in CardKeyIn) (*CardFull, error) {
+	stale := c.cardsDown()
 	f, err := card.Show(c.Project, in.Key)
 	if err != nil {
 		return nil, err
 	}
-	return fullOut(f), nil
+	out := fullOut(f)
+	out.Stale = stale
+	return out, nil
 }
 
 type CardUpdateIn struct {
@@ -341,7 +353,7 @@ func CardUpdate(c Ctx, in CardUpdateIn) (*Card, error) {
 	if err != nil {
 		return nil, err
 	}
-	o := cardOut(*cd)
+	o := c.pushed(cd)
 	return &o, nil
 }
 
@@ -352,8 +364,9 @@ type CardMoveIn struct {
 }
 
 type CardMoveOut struct {
-	Card    Card   `json:"card"`
-	Warning string `json:"warning,omitempty"`
+	Card    Card      `json:"card"`
+	Warning string    `json:"warning,omitempty"`
+	Sync    *CardSync `json:"sync,omitempty"`
 }
 
 // CardMove changes state or order. Entering the terminal state stamps
@@ -363,7 +376,8 @@ func CardMove(c Ctx, in CardMoveIn) (*CardMoveOut, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &CardMoveOut{Card: cardOut(*cd), Warning: warn}, nil
+	o := c.pushed(cd)
+	return &CardMoveOut{Card: o, Warning: warn, Sync: o.Sync}, nil
 }
 
 // CardClaim is "I'm on it": assign to this agent and move out of the
@@ -373,7 +387,8 @@ func CardClaim(c Ctx, in CardKeyIn) (*CardMoveOut, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &CardMoveOut{Card: cardOut(*cd), Warning: warn}, nil
+	o := c.pushed(cd)
+	return &CardMoveOut{Card: o, Warning: warn, Sync: o.Sync}, nil
 }
 
 // CardDelete soft-deletes; the number is never reused.
@@ -383,6 +398,7 @@ func CardDelete(c Ctx, in CardKeyIn) (*Card, error) {
 		return nil, err
 	}
 	o := cardOut(*cd)
+	o.Sync = c.pushCards()
 	return &o, nil
 }
 
@@ -396,7 +412,7 @@ func CardCommentAdd(c Ctx, in CardCommentIn) (*CardComment, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &CardComment{ID: cm.ID, Agent: cm.Agent, Body: cm.Body, CreatedAt: ts(cm.CreatedAt)}, nil
+	return &CardComment{ID: cm.ID, Agent: cm.Agent, Body: cm.Body, CreatedAt: ts(cm.CreatedAt), Sync: c.pushCards()}, nil
 }
 
 type CardTagIn struct {
@@ -410,7 +426,7 @@ func CardTag(c Ctx, in CardTagIn) (*Card, error) {
 	if err != nil {
 		return nil, err
 	}
-	o := cardOut(*cd)
+	o := c.pushed(cd)
 	return &o, nil
 }
 
@@ -427,6 +443,7 @@ type CardLinkIn struct {
 type CardLinkOut struct {
 	Link  *CardLink  `json:"link,omitempty"`
 	Links []CardLink `json:"links"`
+	Sync  *CardSync  `json:"sync,omitempty"`
 }
 
 // CardLink adds or removes a link, then returns the card's links.
@@ -446,6 +463,7 @@ func CardLinkOp(c Ctx, in CardLinkIn) (*CardLinkOut, error) {
 	default:
 		return nil, fmt.Errorf("op %q; add or remove", in.Op)
 	}
+	out.Sync = c.pushCards()
 	f, err := card.Show(c.Project, in.Key)
 	if err != nil {
 		return nil, err
@@ -464,6 +482,7 @@ type CardChecklistIn struct {
 
 type CardChecklistOut struct {
 	Checklists []CardChecklist `json:"checklists"`
+	Sync       *CardSync       `json:"sync,omitempty"`
 }
 
 // CardChecklist manages what a human ticks off. byz-kan CW-35: the uat
@@ -488,11 +507,12 @@ func CardChecklistOp(c Ctx, in CardChecklistIn) (*CardChecklistOut, error) {
 	if err != nil {
 		return nil, err
 	}
+	sy := c.pushCards()
 	f, err := card.Show(c.Project, in.Key)
 	if err != nil {
 		return nil, err
 	}
-	return &CardChecklistOut{Checklists: fullOut(f).Checklists}, nil
+	return &CardChecklistOut{Checklists: fullOut(f).Checklists, Sync: sy}, nil
 }
 
 type CardStatesIn struct {
@@ -507,6 +527,7 @@ type CardStatesIn struct {
 
 type CardStatesOut struct {
 	States []CardState `json:"states"`
+	Sync   *CardSync   `json:"sync,omitempty"`
 }
 
 // CardStates manages the swimlanes. One default, one terminal.
@@ -536,6 +557,10 @@ func CardStates(c Ctx, in CardStatesIn) (*CardStatesOut, error) {
 	if err != nil {
 		return nil, err
 	}
+	out := &CardStatesOut{States: []CardState{}}
+	if op := strings.ToLower(in.Op); op != "" && op != "list" {
+		out.Sync = c.pushCards()
+	}
 	cards, err := card.List(c.Project, card.Filter{All: true})
 	if err != nil {
 		return nil, err
@@ -544,7 +569,6 @@ func CardStates(c Ctx, in CardStatesIn) (*CardStatesOut, error) {
 	for _, cd := range cards {
 		counts[cd.State]++
 	}
-	out := &CardStatesOut{States: []CardState{}}
 	for _, s := range sts {
 		out.States = append(out.States, CardState{Name: s.Name, Count: counts[s.Name], Default: s.Default, Terminal: s.Terminal, WIPLimit: s.WIPLimit})
 	}
