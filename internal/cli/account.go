@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/Syluxso/gears-cli/internal/api"
 	"github.com/Syluxso/gears-cli/internal/session"
@@ -47,7 +48,7 @@ per call and is not a gate.`,
 		}
 		pw := loginPassword
 		if pw == "" {
-			pw = prompt("password: ")
+			pw = promptSecret("password: ")
 		}
 		if email == "" || pw == "" {
 			return fmt.Errorf("email and password required")
@@ -182,11 +183,31 @@ var whoamiCmd = &cobra.Command{
 	},
 }
 
+// stdin is shared by every prompt so a piped "email\npassword\n" is not
+// swallowed by the first prompt's read buffer.
+var stdin = bufio.NewReader(os.Stdin)
+
 func prompt(label string) string {
 	fmt.Fprint(os.Stderr, label)
-	r := bufio.NewReader(os.Stdin)
-	s, _ := r.ReadString('\n')
+	s, _ := stdin.ReadString('\n')
 	return strings.TrimSpace(s)
+}
+
+// promptSecret reads a line without echo when stdin is a terminal, then
+// prints the newline the terminal swallowed. Piped stdin is read as a plain
+// line so scripts still work.
+func promptSecret(label string) string {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		return prompt(label)
+	}
+	fmt.Fprint(os.Stderr, label)
+	b, err := term.ReadPassword(fd)
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 func init() {
