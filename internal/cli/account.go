@@ -156,6 +156,13 @@ var syncCmd = &cobra.Command{
 		if out.Projects > 0 {
 			fmt.Printf("projects: %d checked, %d created\n", out.Projects, out.ProjectsCreated)
 		}
+		if out.Cards != "" {
+			fmt.Printf("cards: %s", out.Cards)
+			if out.CardsRenumbered > 0 {
+				fmt.Printf(", %d renumbered by the API", out.CardsRenumbered)
+			}
+			fmt.Println()
+		}
 		if out.ContentUp > 0 || out.ContentDown > 0 {
 			fmt.Printf("artifact content: %d up, %d down\n", out.ContentUp, out.ContentDown)
 		}

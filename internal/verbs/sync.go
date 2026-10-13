@@ -14,8 +14,8 @@ type SyncIn struct {
 	Host string `json:"host,omitempty" jsonschema:"API host. Default: GEARS_API, else the saved default, else api.gearsos.com."`
 }
 
-// Sync pushes local desk, session and artifact rows changed since the last
-// push, then pulls and applies changes after the saved cursor.
+// Sync pushes local desk, session, artifact and board rows changed since
+// the last push, then pulls and applies changes after the saved cursor.
 func Sync(c Ctx, in SyncIn) (*sync.Report, error) {
 	host := in.Host
 	if host == "" {

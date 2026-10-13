@@ -35,6 +35,7 @@ type fakeAPI struct {
 	ws       string            // the workspace bind reports
 	content  map[string][]byte // artifact id -> body
 	cursors  []string          // cursor asked for on each pull
+	board    fakeBoard
 }
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -47,20 +48,44 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(b, &in)
 		f.pushes = append(f.pushes, in)
 		out := api.PushOut{Results: []api.PushResult{}}
-		for tbl, rows := range in.Rows {
-			for _, row := range rows {
-				id := row.(map[string]any)["id"].(string)
-				out.Results = append(out.Results, api.PushResult{Table: tbl, ID: id, Applied: true})
-				out.Applied++
+		// The API's order: parents first, then the board in push order.
+		order := []string{"workspaces", "projects", "desk_items", "session_entries", "artifacts"}
+		order = append(order, cardTables...)
+		for _, tbl := range order {
+			if isCardTable(tbl) && (f.board.noCards || f.board.ignoreTables) {
+				continue // an API from before GRS-47 ignores the tables
+			}
+			for _, row := range in.Rows[tbl] {
+				m := row.(map[string]any)
+				id := m["id"].(string)
+				res := api.PushResult{Table: tbl, ID: id, Applied: true}
+				if isCardTable(tbl) {
+					res = f.board.push(tbl, m)
+				}
+				out.Results = append(out.Results, res)
+				if res.Applied {
+					out.Applied++
+				} else {
+					out.Skipped++
+				}
 			}
 		}
 		for tbl, ids := range in.Deletes {
+			if isCardTable(tbl) && (f.board.noCards || f.board.ignoreTables) {
+				continue
+			}
 			for _, id := range ids {
 				out.Results = append(out.Results, api.PushResult{Table: tbl, ID: id})
 				out.Skipped++
 			}
 		}
 		_ = json.NewEncoder(w).Encode(out)
+	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/board"):
+		if f.board.noCards {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(f.board.get())
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/sync"):
 		f.cursors = append(f.cursors, r.URL.Query().Get("cursor"))
 		out := api.PullOut{Changes: f.pending}

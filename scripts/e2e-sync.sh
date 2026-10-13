@@ -202,6 +202,60 @@ assert not ps['beta']['onDisk'] and any('missing' in n for n in ps['beta']['note
 print('ok: status', len(ps), 'projects, api', s['api']['state'], s['api']['projects'])"
 ( cd "$GM" && GEARS_API=http://127.0.0.1:1 "$G" status ) | grep -q "api: not logged in" || fail "status for a host with no token does not say so"
 
+echo "== GRS-47: cards: two machines mint the same number offline; the API's numbers win on both"
+# Both caches have synced (states adopted, no cards yet), so both propose 1.
+newcard() { "$G" card new "$1" -t task --set "task.what=$1" --set task.soThat=e2e --accept "syncs, proven by e2e-sync" --tag e2e --json | python -c "import json,sys; print(json.load(sys.stdin)['key'])"; }
+K_ROOT=$(cd "$WS" && newcard "Root card")
+K_CLONE=$(cd "$C" && newcard "Clone card")
+[ "$K_ROOT" = "WS-1" ] && [ "$K_CLONE" = "WS-1" ] || fail "offline proposals: root $K_ROOT clone $K_CLONE (want WS-1 both)"
+echo "ok: both caches proposed WS-1 offline"
+( cd "$WS" && "$G" sync --json ) | python -c "import json,sys; r=json.load(sys.stdin); assert r['cards']=='synced' and r['failed']==0, r; print('ok: root sync cards', r['cards'])"
+( cd "$C" && "$G" sync --json ) | python -c "import json,sys; r=json.load(sys.stdin); assert r['cards']=='synced' and r['failed']==0 and r['cardsRenumbered']==1 and any('WS-1 is WS-2' in n for n in r['notes']), r; print('ok: clone renumbered:', [n for n in r['notes'] if 'renumber' in n or ' is WS-' in n])"
+( cd "$WS" && "$G" sync >/dev/null )
+keys() { "$G" card list --all --json | python -c "import json,sys; print(' '.join(sorted(c['key']+'='+c['title'].replace(' ','_') for c in json.load(sys.stdin)['cards'])))"; }
+KR=$(cd "$WS" && keys); KC=$(cd "$C" && keys)
+[ "$KR" = "WS-1=Root_card WS-2=Clone_card" ] || fail "root keys: $KR"
+[ "$KC" = "$KR" ] || fail "clone keys ($KC) differ from root ($KR)"
+curl -s -H "Authorization: Bearer $TOKEN" "$GEARS_API/api/v1/workspaces/$WS_ID/board" | python -c "import json,sys; b=json.load(sys.stdin); k=sorted(c['key'] for c in b['cards']); assert k==['WS-1','WS-2'] and b['prefix']=='WS', b; print('ok: API board', k)"
+echo "ok: distinct keys, both caches agree: $KR"
+# A new card on the clone proposes past what it has seen.
+[ "$(cd "$C" && "$G" card list --all --json | python -c "import json,sys; print(json.load(sys.stdin)['prefix'])")" = "WS" ] || fail "clone prefix is not the workspace's"
+
+echo "== GRS-47: a comment, a checklist item and a move on the root reach the clone; card show matches"
+( cd "$WS" && "$G" card comment WS-2 "Root looked at the clone's card" >/dev/null \
+  && "$G" card check WS-2 "Clone sees the comment" >/dev/null \
+  && "$G" card check WS-2 --op tick 1 >/dev/null \
+  && "$G" card move WS-2 "In Progress" >/dev/null \
+  && "$G" card link WS-1 WS-2 --kind blocks >/dev/null \
+  && "$G" sync >/dev/null )
+( cd "$C" && "$G" sync --json ) | python -c "import json,sys; r=json.load(sys.stdin); assert r['failed']==0 and not [n for n in r['notes'] if 'apply' in n], r; print('ok: clone pulled', r['pulled'], 'applied', r['applied'])"
+SHOWNORM="import json,sys; c=json.load(sys.stdin); c['events']=sorted(json.dumps(e,sort_keys=True) for e in c['events']); print(json.dumps(c,sort_keys=True))"
+for k in WS-1 WS-2; do
+  R=$(cd "$WS" && "$G" card show $k --json | python -c "$SHOWNORM")
+  CL=$(cd "$C" && "$G" card show $k --json | python -c "$SHOWNORM")
+  [ "$R" = "$CL" ] || { echo "root:  $R"; echo "clone: $CL"; fail "card show $k differs between root and clone"; }
+done
+( cd "$C" && "$G" card show WS-2 --json ) | python -c "
+import json,sys
+c=json.load(sys.stdin)
+assert c['state']=='In Progress', c['state']
+assert [x['body'] for x in c['comments']]==['Root looked at the clone\'s card'], c['comments']
+it=c['checklists'][0]['items']; assert len(it)==1 and it[0]['done'] and it[0]['title']=='Clone sees the comment', it
+assert c['blockedBy']==['WS-1'], c['blockedBy']
+assert any(e['kind']=='moved' for e in c['events']) and any(e['kind']=='created' for e in c['events']), c['events']
+print('ok: card show WS-1 and WS-2 identical on root and clone (state, comment, checklist, link, activity)')"
+
+echo "== GRS-47: a card deleted on the clone is gone on the root; its number is not reused"
+( cd "$C" && "$G" card delete WS-1 >/dev/null && "$G" sync >/dev/null )
+( cd "$WS" && "$G" sync >/dev/null )
+( cd "$WS" && "$G" card list --all --json ) | python -c "import json,sys; k=[c['key'] for c in json.load(sys.stdin)['cards']]; assert k==['WS-2'], k; print('ok: root lists', k)"
+curl -s -H "Authorization: Bearer $TOKEN" "$GEARS_API/api/v1/workspaces/$WS_ID/board" | python -c "import json,sys; k=[c['key'] for c in json.load(sys.stdin)['cards']]; assert k==['WS-2'], k; print('ok: API board', k)"
+K3=$(cd "$WS" && newcard "After delete")
+[ "$K3" = "WS-3" ] || fail "number reused after delete: $K3"
+( cd "$WS" && "$G" sync >/dev/null ) && ( cd "$C" && "$G" sync >/dev/null )
+[ "$(cd "$C" && keys)" = "WS-2=Clone_card WS-3=After_delete" ] || fail "clone after delete: $(cd "$C" && keys)"
+echo "ok: deletes propagate both ways; WS-3 is new on both"
+
 echo "== second sync is a no-op"
 # The push window includes the last push's second (stamps are to the
 # second), so the first sync after a write in that second re-sends it once.

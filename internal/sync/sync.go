@@ -1,8 +1,8 @@
 // Package sync moves the local cache to and from gears-api. Push first
 // (rows changed since the last push), then pull (changes after the saved
 // cursor) and apply. The server is the authority; a pulled row overwrites
-// the local one. Desk, sessions and artifacts sync; cards and runs do not
-// yet (not in slice 1).
+// the local one. Desk, sessions, artifacts and the board (GRS-47, see
+// cards.go) sync; runs do not.
 package sync
 
 import (
@@ -38,8 +38,13 @@ type Report struct {
 	ContentDown int    `json:"contentDownloaded"`
 	// Projects is how many manifest projects were checked against the API
 	// (one GET each); ProjectsCreated how many of them it did not have.
-	Projects        int      `json:"projects"`
-	ProjectsCreated int      `json:"projectsCreated"`
+	Projects        int `json:"projects"`
+	ProjectsCreated int `json:"projectsCreated"`
+	// Cards is "synced", or "skipped" when the API has no card tables (or
+	// the board could not be read); CardsRenumbered counts local cards the
+	// API gave another number.
+	Cards           string   `json:"cards"`
+	CardsRenumbered int      `json:"cardsRenumbered"`
 	Notes           []string `json:"notes"`
 }
 
@@ -323,7 +328,11 @@ func Run(ctx context.Context, c *api.Client, p *project.Project) (*Report, error
 	}
 	defer db.Close()
 
-	if err := push(ctx, c, p, db, ws, r); err != nil {
+	cs, err := prepareCards(ctx, c, p, db, ws, r)
+	if err != nil {
+		return r, err
+	}
+	if err := push(ctx, c, p, db, ws, r, cs); err != nil {
 		return r, err
 	}
 	// GRS-40: the cache holds every artifact of the workspace. A cache that
@@ -339,11 +348,28 @@ func Run(ctx context.Context, c *api.Client, p *project.Project) (*Report, error
 			}
 		}
 	}
-	if err := pull(ctx, c, p, db, ws, r); err != nil {
+	// GRS-47: a CLI from before cards sync passed card changes by without
+	// applying them. The first sync that syncs cards pulls from the start,
+	// once, so the board arrives whole.
+	cardScope, _ := stateDB(db, "cards_scope")
+	if cs.ok && cardScope != "workspace" {
+		if cur, _ := stateDB(db, "cursor"); cur != "" && cur != "0" {
+			r.Notes = append(r.Notes, "first sync with cards: pulling from the start, once (cursor "+cur+" -> 0)")
+			if err := setState(db, "cursor", "0"); err != nil {
+				return r, err
+			}
+		}
+	}
+	if err := pull(ctx, c, p, db, ws, r, cs); err != nil {
 		return r, err
 	}
 	if scope != "workspace" {
 		if err := setState(db, "artifact_scope", "workspace"); err != nil {
+			return r, err
+		}
+	}
+	if cs.ok && cardScope != "workspace" {
+		if err := setState(db, "cards_scope", "workspace"); err != nil {
 			return r, err
 		}
 	}
@@ -352,7 +378,7 @@ func Run(ctx context.Context, c *api.Client, p *project.Project) (*Report, error
 
 // ------------------------------------------------------------------ push
 
-func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws string, r *Report) error {
+func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws string, r *Report, cs *cardSync) error {
 	// Timestamps are to the second, and pushed_at is taken as the push
 	// starts, so a row written later in that same second carries the same
 	// stamp. The window is inclusive (>= since): such a row goes up on the
@@ -450,6 +476,9 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 			tombs.Close()
 			return err
 		}
+		if isCardTable(tbl) && !cs.ok {
+			continue // kept until the API has card tables
+		}
 		if in.Deletes == nil {
 			in.Deletes = map[string][]string{}
 		}
@@ -458,11 +487,31 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 	}
 	tombs.Close()
 
-	total := len(in.Rows["desk_items"]) + len(in.Rows["session_entries"]) + len(in.Rows["artifacts"]) + nDeletes
+	// The board, in the API's push order, when the API has card tables.
+	if cs.ok {
+		if err := collectCards(db, cs, &in); err != nil {
+			return fmt.Errorf("cards: %w", err)
+		}
+	}
+
+	total := len(in.Rows["desk_items"]) + len(in.Rows["session_entries"]) + len(in.Rows["artifacts"]) + nDeletes + cs.sent
 	if total > 0 {
 		out, err := c.Push(ctx, ws, in)
 		if err != nil {
 			return fmt.Errorf("push: %w", err)
+		}
+		if cs.ok {
+			answered, err := applyCardResults(db, cs, out.Results, r)
+			if err != nil {
+				return fmt.Errorf("cards: %w", err)
+			}
+			// Card rows sent and not one answered: an API that ignores the
+			// tables. Same as no board route: keep the watermark.
+			if cs.sent > 0 && !answered {
+				cs.ok = false
+				r.Cards = "skipped"
+				r.Notes = append(r.Notes, api.ErrNoCards.Error()+" (cards stay local until it is)")
+			}
 		}
 		r.Pushed, r.Skipped, r.Failed = out.Applied, out.Skipped, out.Failed
 		failed := map[string]bool{}
@@ -474,7 +523,7 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 		}
 		for tbl, ids := range in.Deletes {
 			for _, id := range ids {
-				if failed[tbl+"/"+id] {
+				if failed[tbl+"/"+id] || (isCardTable(tbl) && !cs.ok) {
 					continue
 				}
 				_, _ = db.Exec(`DELETE FROM sync_deletes WHERE tbl = ? AND id = ?`, tbl, id)
@@ -501,12 +550,17 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 			_, _ = db.Exec(`UPDATE artifacts SET remote_file_id = ? WHERE id = ?`, fileID, a.ID)
 		}
 	}
+	if cs.ok {
+		if err := setState(db, "cards_pushed_at", cs.now); err != nil {
+			return err
+		}
+	}
 	return setState(db, "pushed_at", now)
 }
 
 // ------------------------------------------------------------------ pull
 
-func pull(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws string, r *Report) error {
+func pull(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws string, r *Report, cs *cardSync) error {
 	cursorStr, _ := stateDB(db, "cursor")
 	var cursor int64
 	fmt.Sscan(cursorStr, &cursor)
@@ -515,7 +569,11 @@ func pull(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 		if err != nil {
 			return fmt.Errorf("pull: %w", err)
 		}
+		sortForApply(out.Changes)
 		for _, ch := range out.Changes {
+			if isCardTable(ch.Table) && !cs.ok {
+				continue
+			}
 			r.Pulled++
 			applied, err := apply(ctx, c, p, db, ch, r)
 			if err != nil {
@@ -669,6 +727,9 @@ func apply(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, c
 	case "workspaces", "projects":
 		// Binding is local; nothing to apply.
 		return false, nil
+	}
+	if isCardTable(ch.Table) {
+		return applyCard(db, ch)
 	}
 	return false, nil
 }

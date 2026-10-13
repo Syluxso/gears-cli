@@ -416,10 +416,73 @@ type PushIn struct {
 }
 
 type PushResult struct {
-	Table   string `json:"table"`
-	ID      string `json:"id"`
-	Applied bool   `json:"applied"`
-	Error   string `json:"error,omitempty"`
+	Table    string    `json:"table"`
+	ID       string    `json:"id"`
+	Applied  bool      `json:"applied"`
+	Error    string    `json:"error,omitempty"`
+	Assigned *Assigned `json:"assigned,omitempty"`
+}
+
+// Assigned is what the API decided for a pushed row (GRS-47): a card's
+// final number and key (and the state it used when the sent one was
+// unknown), or the id of the existing state a pushed state merged into.
+type Assigned struct {
+	ID      string `json:"id,omitempty"`
+	Number  int    `json:"number,omitempty"`
+	Key     string `json:"key,omitempty"`
+	StateID string `json:"stateId,omitempty"`
+}
+
+// BoardState is one swimlane as the API holds it.
+type BoardState struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Position   int       `json:"position"`
+	IsDefault  bool      `json:"isDefault"`
+	IsTerminal bool      `json:"isTerminal"`
+	WIPLimit   int       `json:"wipLimit"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+}
+
+// Board is the workspace's one board: its key prefix and states. Cards are
+// left out here; sync pulls them as rows.
+type Board struct {
+	WorkspaceID string       `json:"workspaceId"`
+	Prefix      string       `json:"prefix"`
+	States      []BoardState `json:"states"`
+}
+
+// ErrNoCards means the API answers without card tables: a gears-api from
+// before GRS-47, where the board route does not exist.
+var ErrNoCards = errors.New("api has no card tables yet; deploy gears-api")
+
+// Board reads the workspace's board. A bare 404 (no route; not a problem
+// body) is ErrNoCards.
+func (c *Client) Board(ctx context.Context, workspaceID string) (*Board, error) {
+	raw, code, err := c.Raw(ctx, http.MethodGet, "/api/v1/workspaces/"+workspaceID+"/board", nil, "")
+	if err != nil {
+		return nil, err
+	}
+	if code == http.StatusNotFound || code == http.StatusMethodNotAllowed {
+		var p Problem
+		if json.Unmarshal(raw, &p) == nil && p.Status != 0 {
+			return nil, &p
+		}
+		return nil, ErrNoCards
+	}
+	if code >= 300 {
+		var p Problem
+		if json.Unmarshal(raw, &p) == nil && p.Status != 0 {
+			return nil, &p
+		}
+		return nil, fmt.Errorf("board: %d %s", code, strings.TrimSpace(string(raw)))
+	}
+	var b Board
+	if err := json.Unmarshal(raw, &b); err != nil {
+		return nil, fmt.Errorf("board: %w", err)
+	}
+	return &b, nil
 }
 
 type PushOut struct {
