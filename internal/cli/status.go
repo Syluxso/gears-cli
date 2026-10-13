@@ -111,6 +111,9 @@ func printStatusBrief(w io.Writer, out *verbs.StatusOut, width int, colour bool)
 
 	line(fmt.Sprintf("project   %s  %s  (cards %s-n)", out.Project, out.ProjectID, out.Prefix))
 	line(fmt.Sprintf("agent     %s", out.Agent))
+	if out.Current != nil {
+		line(fmt.Sprintf("in        %s  %s  (%s)", out.Current.Slug, out.Current.ID, out.Current.Path))
+	}
 
 	fmt.Fprintln(w)
 	head("desk", fmt.Sprintf("%d open", len(out.Desk)))
@@ -201,6 +204,9 @@ func printStatusBrief(w io.Writer, out *verbs.StatusOut, width int, colour bool)
 func printStatusFull(out *verbs.StatusOut) {
 	fmt.Printf("project   %s  %s  (cards %s-n)\n", out.Project, out.ProjectID, out.Prefix)
 	fmt.Printf("agent     %s\n", out.Agent)
+	if out.Current != nil {
+		fmt.Printf("in        %s  %s  (%s)\n", out.Current.Slug, out.Current.ID, out.Current.Path)
+	}
 	fmt.Printf("root      %s\n", out.Root)
 
 	fmt.Printf("\ndesk      %d open item%s\n", len(out.Desk), plural(len(out.Desk), "", "s"))

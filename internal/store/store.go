@@ -36,9 +36,20 @@ func Open(p *project.Project) (*sql.DB, error) {
 			return nil, err
 		}
 	}
-	if err := addColumns(db); err != nil {
+	added, err := addColumns(db)
+	if err != nil {
 		db.Close()
 		return nil, err
+	}
+	// GRS-40: artifacts carry their project. A standalone project binding
+	// (a clone bound by remote) pushed every artifact under its own id
+	// before the column existed, so its rows take that id; at a workspace
+	// root they stay workspace-level (empty).
+	if added["artifacts.project_id"] && !p.IsWorkspace() {
+		if _, err := db.Exec(`UPDATE artifacts SET project_id = ? WHERE project_id = ''`, p.ID); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	return db, nil
 }
@@ -67,20 +78,25 @@ var columns = []struct{ table, column, def string }{
 	{"session_entries", "project_id", "TEXT NOT NULL DEFAULT ''"},
 	{"desk_items", "updated_at", "TEXT NOT NULL DEFAULT ''"},
 	{"artifacts", "remote_file_id", "TEXT NOT NULL DEFAULT ''"},
+	// GRS-40: one cache per workspace holds every project's artifacts; the
+	// project is a tag on the row, empty for workspace-level ones.
+	{"artifacts", "project_id", "TEXT NOT NULL DEFAULT ''"},
 }
 
-func addColumns(db *sql.DB) error {
+// addColumns returns the "table.column" names it added this time.
+func addColumns(db *sql.DB) (map[string]bool, error) {
+	added := map[string]bool{}
 	for _, c := range columns {
 		rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, c.table)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		have := false
 		for rows.Next() {
 			var name string
 			if err := rows.Scan(&name); err != nil {
 				rows.Close()
-				return err
+				return nil, err
 			}
 			if name == c.column {
 				have = true
@@ -91,10 +107,11 @@ func addColumns(db *sql.DB) error {
 			continue
 		}
 		if _, err := db.Exec(`ALTER TABLE ` + c.table + ` ADD COLUMN ` + c.column + ` ` + c.def); err != nil {
-			return err
+			return nil, err
 		}
+		added[c.table+"."+c.column] = true
 	}
-	return nil
+	return added, nil
 }
 
 // Exists reports whether the local record is present, so read-only commands

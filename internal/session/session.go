@@ -28,6 +28,9 @@ type Entry struct {
 	Agent string
 	Kind  string
 	Text  string
+	// ProjectID is the project the entry is about, empty for workspace-level
+	// entries. Set from the directory the command ran in (GRS-40).
+	ProjectID string
 }
 
 // Short is the id shown in listings and given as runbook evidence: the last
@@ -49,8 +52,14 @@ func DefaultAgent() string {
 	return "local"
 }
 
-// Append writes one entry and returns it with its timestamp.
+// Append writes one workspace-level entry. See AppendFor.
 func Append(p *project.Project, kind, agent, text string) (*Entry, error) {
+	return AppendFor(p, "", kind, agent, text)
+}
+
+// AppendFor writes one entry about projectID (empty: none) and returns it
+// with its timestamp.
+func AppendFor(p *project.Project, projectID, kind, agent, text string) (*Entry, error) {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	if !validKind(kind) {
 		return nil, fmt.Errorf("kind %q; one of %s", kind, strings.Join(Kinds, ", "))
@@ -71,12 +80,12 @@ func Append(p *project.Project, kind, agent, text string) (*Entry, error) {
 	at := store.Now()
 	id := project.NewID()
 	if _, err := db.Exec(
-		`INSERT INTO session_entries (at, agent, kind, text, uid) VALUES (?, ?, ?, ?, ?)`,
-		at, agent, kind, text, id,
+		`INSERT INTO session_entries (at, agent, kind, text, uid, project_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		at, agent, kind, text, id, projectID,
 	); err != nil {
 		return nil, err
 	}
-	return &Entry{ID: id, At: store.Parse(at), Agent: agent, Kind: kind, Text: text}, nil
+	return &Entry{ID: id, At: store.Parse(at), Agent: agent, Kind: kind, Text: text, ProjectID: projectID}, nil
 }
 
 // EnsureUIDs gives every entry written before ids were minted at append time
@@ -132,7 +141,7 @@ func Find(p *project.Project, ref string) (*Entry, error) {
 		return nil, err
 	}
 	rows, err := db.Query(
-		`SELECT uid, at, agent, kind, text FROM session_entries WHERE uid = ? OR uid LIKE ? OR uid LIKE ?`,
+		`SELECT uid, at, agent, kind, text, project_id FROM session_entries WHERE uid = ? OR uid LIKE ? OR uid LIKE ?`,
 		ref, ref+"%", "%"+ref,
 	)
 	if err != nil {
@@ -143,7 +152,7 @@ func Find(p *project.Project, ref string) (*Entry, error) {
 	for rows.Next() {
 		var e Entry
 		var at string
-		if err := rows.Scan(&e.ID, &at, &e.Agent, &e.Kind, &e.Text); err != nil {
+		if err := rows.Scan(&e.ID, &at, &e.Agent, &e.Kind, &e.Text, &e.ProjectID); err != nil {
 			return nil, err
 		}
 		e.At = store.Parse(at)
@@ -192,7 +201,7 @@ func since(p *project.Project, start time.Time) ([]Entry, error) {
 	}
 
 	rows, err := db.Query(
-		`SELECT uid, at, agent, kind, text FROM session_entries WHERE at >= ? ORDER BY at, id`,
+		`SELECT uid, at, agent, kind, text, project_id FROM session_entries WHERE at >= ? ORDER BY at, id`,
 		start.UTC().Format(time.RFC3339),
 	)
 	if err != nil {
@@ -204,7 +213,7 @@ func since(p *project.Project, start time.Time) ([]Entry, error) {
 	for rows.Next() {
 		var e Entry
 		var at string
-		if err := rows.Scan(&e.ID, &at, &e.Agent, &e.Kind, &e.Text); err != nil {
+		if err := rows.Scan(&e.ID, &at, &e.Agent, &e.Kind, &e.Text, &e.ProjectID); err != nil {
 			return nil, err
 		}
 		e.At = store.Parse(at)

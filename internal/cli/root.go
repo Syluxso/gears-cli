@@ -50,9 +50,14 @@ func Execute() error {
 	return nil
 }
 
-// ctx resolves the project from the working directory and the acting agent.
+// ctx resolves the binding from the working directory (walking up to the
+// workspace root), the project the directory is in, and the acting agent.
 func ctx() (verbs.Ctx, error) {
-	p, err := project.Find(mustCwd())
+	return ctxAt(mustCwd())
+}
+
+func ctxAt(dir string) (verbs.Ctx, error) {
+	p, err := project.Find(dir)
 	if err != nil {
 		return verbs.Ctx{}, err
 	}
@@ -60,7 +65,7 @@ func ctx() (verbs.Ctx, error) {
 	if agent == "" {
 		agent = session.DefaultAgent()
 	}
-	return verbs.Ctx{Project: p, Agent: agent}, nil
+	return verbs.Ctx{Project: p, Agent: agent, Current: project.Current(p, dir)}, nil
 }
 
 // emit prints v as JSON when --json is set and returns true; otherwise it

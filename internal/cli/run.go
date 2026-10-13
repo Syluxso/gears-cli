@@ -9,9 +9,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Syluxso/gears-cli/internal/mcpserver"
-	"github.com/Syluxso/gears-cli/internal/project"
-	"github.com/Syluxso/gears-cli/internal/session"
-	"github.com/Syluxso/gears-cli/internal/verbs"
 )
 
 var runDir string
@@ -33,18 +30,14 @@ Set GEARS_AGENT in the harness env so tools act as that agent.`,
 		if dir == "" {
 			dir = mustCwd()
 		}
-		p, err := project.Find(dir)
+		c, err := ctxAt(dir)
 		if err != nil {
 			return err
 		}
-		agent := globalAgent
-		if agent == "" {
-			agent = session.DefaultAgent()
-		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
-		fmt.Fprintf(os.Stderr, "gears mcp: project %s, agent %s, %s\n", p.Slug, agent, p.Root)
-		s := mcpserver.New(verbs.Ctx{Project: p, Agent: agent}, Version)
+		fmt.Fprintf(os.Stderr, "gears mcp: project %s, agent %s, %s\n", c.Project.Slug, c.Agent, c.Project.Root)
+		s := mcpserver.New(c, Version)
 		return mcpserver.ServeStdio(ctx, s)
 	},
 }

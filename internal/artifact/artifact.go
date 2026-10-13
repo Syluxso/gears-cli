@@ -52,6 +52,10 @@ type Artifact struct {
 	ShapeOK     bool
 	ShapeErrors []string
 	Tags        []string
+	// ProjectID is the project the artifact belongs to, empty for a
+	// workspace-level one. A tag on the row, not a place: every artifact of
+	// the workspace lives flat in the root's .gears/artifacts/ (GRS-40).
+	ProjectID string
 }
 
 const sep = "--"
@@ -87,9 +91,21 @@ func Parse(file string) (prefix, slug string, ok bool) {
 	return prefix, slug, true
 }
 
-// New creates the row, then the file seeded from the prefix's shape. ADRs
-// are numbered (adr--001-...) so their order is visible in a listing.
+// New creates a workspace-level artifact (or, in a standalone project
+// binding, one of that project's). See NewFor.
 func New(p *project.Project, prefix, title, agent string) (*Artifact, error) {
+	return NewFor(p, "", prefix, title, agent)
+}
+
+// NewFor creates the row, then the file seeded from the prefix's shape,
+// tagged with projectID (empty: the binding's default, see DefaultProject).
+// ADRs are numbered (adr--001-...) so their order is visible in a listing.
+// File names are unique across the workspace: a name already taken, by any
+// project, is refused.
+func NewFor(p *project.Project, projectID, prefix, title, agent string) (*Artifact, error) {
+	if projectID == "" {
+		projectID = DefaultProject(p)
+	}
 	if !isPrefix(prefix) {
 		return nil, fmt.Errorf("unknown prefix %q; one of %s", prefix, strings.Join(Prefixes, ", "))
 	}
@@ -126,7 +142,7 @@ func New(p *project.Project, prefix, title, agent string) (*Artifact, error) {
 	file := prefix + sep + slug + Ext(prefix)
 	path := filepath.Join(p.ArtifactsDir(), file)
 	if _, err := os.Stat(path); err == nil {
-		return nil, fmt.Errorf("%s already exists", file)
+		return nil, fmt.Errorf("%s already exists in this workspace; artifact file names are unique across its projects, pick another title", file)
 	}
 
 	front := map[string]string{
@@ -155,16 +171,16 @@ func New(p *project.Project, prefix, title, agent string) (*Artifact, error) {
 	a := &Artifact{
 		ID: project.NewID(), Prefix: prefix, Slug: slug, File: file, Path: path,
 		Title: title, Status: status, CreatedBy: agent,
-		BodyHash: hash(body), FilePresent: true,
+		BodyHash: hash(body), FilePresent: true, ProjectID: projectID,
 	}
 	now := store.Now()
 	errs := s.Validate(mustSplit(body))
 	a.ShapeOK = len(errs) == 0
 	a.ShapeErrors = errs
 	if _, err := db.Exec(`INSERT INTO artifacts
-		(id, prefix, slug, file, title, status, created_at, created_by, updated_at, body_hash, file_present, shape_ok, shape_errors)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-		a.ID, a.Prefix, a.Slug, a.File, a.Title, a.Status, now, a.CreatedBy, now, a.BodyHash, b2i(a.ShapeOK), strings.Join(errs, "; "),
+		(id, prefix, slug, file, title, status, created_at, created_by, updated_at, body_hash, file_present, shape_ok, shape_errors, project_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+		a.ID, a.Prefix, a.Slug, a.File, a.Title, a.Status, now, a.CreatedBy, now, a.BodyHash, b2i(a.ShapeOK), strings.Join(errs, "; "), a.ProjectID,
 	); err != nil {
 		return nil, err
 	}
@@ -196,7 +212,7 @@ func List(p *project.Project) ([]Artifact, error) {
 }
 
 func list(db *sql.DB, p *project.Project) ([]Artifact, error) {
-	rows, err := db.Query(`SELECT id, prefix, slug, file, title, status, created_at, created_by, updated_at, body_hash, file_present, shape_ok, shape_errors FROM artifacts`)
+	rows, err := db.Query(`SELECT id, prefix, slug, file, title, status, created_at, created_by, updated_at, body_hash, file_present, shape_ok, shape_errors, project_id FROM artifacts`)
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +222,7 @@ func list(db *sql.DB, p *project.Project) ([]Artifact, error) {
 		var a Artifact
 		var created, updated, serrs string
 		var present, ok int
-		if err := rows.Scan(&a.ID, &a.Prefix, &a.Slug, &a.File, &a.Title, &a.Status, &created, &a.CreatedBy, &updated, &a.BodyHash, &present, &ok, &serrs); err != nil {
+		if err := rows.Scan(&a.ID, &a.Prefix, &a.Slug, &a.File, &a.Title, &a.Status, &created, &a.CreatedBy, &updated, &a.BodyHash, &present, &ok, &serrs, &a.ProjectID); err != nil {
 			return nil, err
 		}
 		a.CreatedAt, a.UpdatedAt = store.Parse(created), store.Parse(updated)
@@ -451,9 +467,12 @@ func Reconcile(p *project.Project) ([]Change, error) {
 			if err := os.WriteFile(a.Path, []byte(body), 0o644); err != nil {
 				return nil, err
 			}
+			// A cache fill, not an edit: updated_at stays, so sync does not
+			// push the seed over the real body (a row pulled without its
+			// content, e.g. no file store, would otherwise be clobbered).
 			errs := validate(set, a.Prefix, body)
-			_, _ = db.Exec(`UPDATE artifacts SET file_present = 1, body_hash = ?, shape_ok = ?, shape_errors = ?, updated_at = ? WHERE id = ?`,
-				hash(body), b2i(len(errs) == 0), strings.Join(errs, "; "), store.Now(), a.ID)
+			_, _ = db.Exec(`UPDATE artifacts SET file_present = 1, body_hash = ?, shape_ok = ?, shape_errors = ? WHERE id = ?`,
+				hash(body), b2i(len(errs) == 0), strings.Join(errs, "; "), a.ID)
 			changes = append(changes, Change{"regenerated", a.File, "from row (file was missing)"})
 			continue
 		}
@@ -510,9 +529,9 @@ func Reconcile(p *project.Project) ([]Change, error) {
 		errs := validate(set, prefix, body)
 		now := store.Now()
 		if _, err := db.Exec(`INSERT INTO artifacts
-			(id, prefix, slug, file, title, status, created_at, created_by, updated_at, body_hash, file_present, shape_ok, shape_errors)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-			project.NewID(), prefix, slug, file, title, status, now, "adopted", now, hash(body), b2i(len(errs) == 0), strings.Join(errs, "; "),
+			(id, prefix, slug, file, title, status, created_at, created_by, updated_at, body_hash, file_present, shape_ok, shape_errors, project_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+			project.NewID(), prefix, slug, file, title, status, now, "adopted", now, hash(body), b2i(len(errs) == 0), strings.Join(errs, "; "), DefaultProject(p),
 		); err != nil {
 			return nil, err
 		}
@@ -569,6 +588,16 @@ func nextADRNumber(p *project.Project) (int, error) {
 		}
 	}
 	return n + 1, nil
+}
+
+// DefaultProject is the project an artifact made or adopted without one
+// belongs to: none at a workspace root, the binding itself in a standalone
+// project binding (a clone bound by remote, with no workspace above it).
+func DefaultProject(p *project.Project) string {
+	if p.IsWorkspace() {
+		return ""
+	}
+	return p.ID
 }
 
 // Hash is the body hash sync compares: sha256 of the LF-normalised body, 16 hex chars.

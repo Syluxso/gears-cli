@@ -10,8 +10,9 @@ import (
 )
 
 var (
-	sessionKind string
-	sessionDays int
+	sessionKind    string
+	sessionDays    int
+	sessionProject string
 )
 
 var sessionCmd = &cobra.Command{
@@ -39,7 +40,7 @@ Kinds:
 		if err != nil {
 			return err
 		}
-		out, err := verbs.SessionNew(c, verbs.SessionNewIn{Kind: sessionKind, Text: strings.Join(args, " ")})
+		out, err := verbs.SessionNew(c, verbs.SessionNewIn{Kind: sessionKind, Text: strings.Join(args, " "), Project: sessionProject})
 		if err != nil {
 			return err
 		}
@@ -47,6 +48,9 @@ Kinds:
 			return nil
 		}
 		fmt.Printf("%s  %s  %s  %s  %s\n", out.Short, hhmm(out.At), out.Agent, out.Kind, out.Text)
+		if out.ProjectID != "" {
+			fmt.Printf("project %s\n", out.ProjectID)
+		}
 		return nil
 	},
 }
@@ -85,6 +89,7 @@ var sessionListCmd = &cobra.Command{
 
 func init() {
 	sessionNewCmd.Flags().StringVarP(&sessionKind, "kind", "k", "done", "done | decision | problem | next")
+	sessionNewCmd.Flags().StringVar(&sessionProject, "project", "", "the project the entry is about: slug, id or path (default: the project the directory is in)")
 	sessionListCmd.Flags().IntVar(&sessionDays, "days", 3, "how many days back to show")
 	sessionCmd.AddCommand(sessionNewCmd, sessionListCmd)
 	root.AddCommand(sessionCmd)

@@ -9,7 +9,10 @@ import (
 	"github.com/Syluxso/gears-cli/internal/verbs"
 )
 
-var artifactTagFilter string
+var (
+	artifactTagFilter string
+	artifactProject   string
+)
 
 var artifactCmd = &cobra.Command{
 	Use:   "artifact",
@@ -35,7 +38,7 @@ instead of inventing structure.
 		if err != nil {
 			return err
 		}
-		out, err := verbs.ArtifactNew(c, verbs.ArtifactNewIn{Prefix: args[0], Title: strings.Join(args[1:], " ")})
+		out, err := verbs.ArtifactNew(c, verbs.ArtifactNewIn{Prefix: args[0], Title: strings.Join(args[1:], " "), Project: artifactProject})
 		if err != nil {
 			return err
 		}
@@ -246,6 +249,7 @@ var artifactShapesCmd = &cobra.Command{
 
 func init() {
 	artifactListCmd.Flags().StringVar(&artifactTagFilter, "tag", "", "only artifacts with this tag")
+	artifactNewCmd.Flags().StringVar(&artifactProject, "project", "", "the project it belongs to: slug, id or path (default: the project the directory is in)")
 	artifactCmd.AddCommand(artifactNewCmd, artifactListCmd, artifactTagCmd, artifactDeleteCmd, artifactReconcileCmd, artifactValidateCmd, artifactShapesCmd)
 	root.AddCommand(artifactCmd)
 }

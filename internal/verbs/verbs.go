@@ -22,9 +22,38 @@ import (
 )
 
 // Ctx is what every verb needs: the bound project and the acting agent.
+// Current is the project the command runs in (the manifest entry whose
+// path holds the working directory), nil at the workspace root; session
+// entries and new artifacts are tagged with it. Desk stays workspace-level.
 type Ctx struct {
 	Project *project.Project
 	Agent   string
+	Current *project.ManifestEntry
+}
+
+// projectFor resolves the project a write is about: an explicit key (id,
+// slug or path from the manifest), else the current project, else none.
+func (c Ctx) projectFor(key string) (string, error) {
+	if key == "" {
+		if c.Current != nil {
+			return c.Current.ID, nil
+		}
+		return "", nil
+	}
+	if !c.Project.IsWorkspace() {
+		if key == c.Project.ID || key == c.Project.Slug {
+			return c.Project.ID, nil
+		}
+		return "", fmt.Errorf("project %q: this binding is project %s only", key, c.Project.Slug)
+	}
+	m, err := project.LoadManifest(c.Project)
+	if err != nil {
+		return "", err
+	}
+	if e := m.Lookup(key); e != nil {
+		return e.ID, nil
+	}
+	return "", fmt.Errorf("no project %q in %s; run gears projects list", key, c.Project.ManifestPath())
 }
 
 func (c Ctx) agent() string {
@@ -48,17 +77,20 @@ type StatusIn struct{}
 
 // StatusOut is the cold-start packet.
 type StatusOut struct {
-	Project    string        `json:"project"`
-	ProjectID  string        `json:"projectId"`
-	Root       string        `json:"root"`
-	Agent      string        `json:"agent"`
-	Prefix     string        `json:"prefix"`
-	Desk       []DeskItem    `json:"desk"`
-	Cards      CardStats     `json:"cards"`
-	Runs       []RunSummary  `json:"runs"`
-	Artifacts  ArtifactStats `json:"artifacts"`
-	Session    []SessionLine `json:"sessionToday"`
-	NextAction string        `json:"nextAction"`
+	Project   string `json:"project"`
+	ProjectID string `json:"projectId"`
+	Root      string `json:"root"`
+	// Current is the project the working directory is in (GRS-40); absent
+	// at the workspace root.
+	Current    *project.ManifestEntry `json:"current,omitempty"`
+	Agent      string                 `json:"agent"`
+	Prefix     string                 `json:"prefix"`
+	Desk       []DeskItem             `json:"desk"`
+	Cards      CardStats              `json:"cards"`
+	Runs       []RunSummary           `json:"runs"`
+	Artifacts  ArtifactStats          `json:"artifacts"`
+	Session    []SessionLine          `json:"sessionToday"`
+	NextAction string                 `json:"nextAction"`
 }
 
 // CardStats is the board at a glance: open cards by state, in board order,
@@ -89,7 +121,7 @@ func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 	out := &StatusOut{Project: c.Project.Slug, ProjectID: c.Project.ID, Root: c.Project.Root, Agent: c.agent(), Prefix: c.Project.Prefix,
 		Desk: []DeskItem{}, Runs: []RunSummary{}, Session: []SessionLine{},
 		Cards:     CardStats{ByState: []CardState{}, Mine: []CardLine{}, Ready: []CardLine{}},
-		Artifacts: ArtifactStats{ByPrefix: map[string]int{}, Problems: []string{}}}
+		Artifacts: ArtifactStats{ByPrefix: map[string]int{}, Problems: []string{}}, Current: c.Current}
 
 	items, err := desk.List(c.Project, desk.Filter{Agent: out.Agent})
 	if err != nil {
@@ -300,19 +332,26 @@ type SessionLine struct {
 	Agent string `json:"agent"`
 	Kind  string `json:"kind"`
 	Text  string `json:"text"`
+	// ProjectID is the project the entry is about; absent for workspace-level.
+	ProjectID string `json:"projectId,omitempty"`
 }
 
 func sessionLine(e session.Entry) SessionLine {
-	return SessionLine{ID: e.ID, Short: e.Short(), At: ts(e.At), Agent: e.Agent, Kind: e.Kind, Text: e.Text}
+	return SessionLine{ID: e.ID, Short: e.Short(), At: ts(e.At), Agent: e.Agent, Kind: e.Kind, Text: e.Text, ProjectID: e.ProjectID}
 }
 
 type SessionNewIn struct {
-	Kind string `json:"kind" jsonschema:"done (something finished; name files or the card) | decision (a choice; architectural ones also earn an ADR) | problem (what broke and how it was resolved) | next (where the next agent starts)."`
-	Text string `json:"text" jsonschema:"One line. Write it as the work happens, not at the end."`
+	Kind    string `json:"kind" jsonschema:"done (something finished; name files or the card) | decision (a choice; architectural ones also earn an ADR) | problem (what broke and how it was resolved) | next (where the next agent starts)."`
+	Text    string `json:"text" jsonschema:"One line. Write it as the work happens, not at the end."`
+	Project string `json:"project,omitempty" jsonschema:"The project this entry is about: slug, id or path from projects_list. Default: the project the server runs in, else none (workspace-level)."`
 }
 
 func SessionNew(c Ctx, in SessionNewIn) (*SessionLine, error) {
-	e, err := session.Append(c.Project, in.Kind, c.agent(), in.Text)
+	pid, err := c.projectFor(in.Project)
+	if err != nil {
+		return nil, err
+	}
+	e, err := session.AppendFor(c.Project, pid, in.Kind, c.agent(), in.Text)
 	if err != nil {
 		return nil, err
 	}
@@ -360,6 +399,7 @@ type Artifact struct {
 	ShapeOK     bool     `json:"shapeOk"`
 	ShapeErrors []string `json:"shapeErrors,omitempty"`
 	Tags        []string `json:"tags"`
+	ProjectID   string   `json:"projectId,omitempty"`
 }
 
 func artifactOut(a artifact.Artifact) Artifact {
@@ -369,18 +409,23 @@ func artifactOut(a artifact.Artifact) Artifact {
 	}
 	return Artifact{ID: a.ID, Prefix: a.Prefix, Slug: a.Slug, File: a.File, Path: a.Path, Title: a.Title,
 		Status: a.Status, CreatedAt: ts(a.CreatedAt), CreatedBy: a.CreatedBy, UpdatedAt: ts(a.UpdatedAt),
-		FilePresent: a.FilePresent, ShapeOK: a.ShapeOK, ShapeErrors: a.ShapeErrors, Tags: tags}
+		FilePresent: a.FilePresent, ShapeOK: a.ShapeOK, ShapeErrors: a.ShapeErrors, Tags: tags, ProjectID: a.ProjectID}
 }
 
 type ArtifactNewIn struct {
-	Prefix string `json:"prefix" jsonschema:"adr (a decision; numbered, never rewritten) | story (a feature in the user's words) | idea | index | free. Runbooks are authored with runbook_new."`
-	Title  string `json:"title" jsonschema:"Human title. The file slug is derived from it."`
+	Prefix  string `json:"prefix" jsonschema:"adr (a decision; numbered, never rewritten) | story (a feature in the user's words) | idea | index | free. Runbooks are authored with runbook_new."`
+	Title   string `json:"title" jsonschema:"Human title. The file slug is derived from it; file names are unique across the workspace."`
+	Project string `json:"project,omitempty" jsonschema:"The project this artifact belongs to: slug, id or path from projects_list. Default: the project the server runs in, else none (workspace-level)."`
 }
 
 // ArtifactNew creates the row, then the file seeded from the shape. The new
 // file fails its shape until the sections are filled; that is expected.
 func ArtifactNew(c Ctx, in ArtifactNewIn) (*Artifact, error) {
-	a, err := artifact.New(c.Project, in.Prefix, in.Title, c.agent())
+	pid, err := c.projectFor(in.Project)
+	if err != nil {
+		return nil, err
+	}
+	a, err := artifact.NewFor(c.Project, pid, in.Prefix, in.Title, c.agent())
 	if err != nil {
 		return nil, err
 	}
