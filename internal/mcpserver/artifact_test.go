@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -123,5 +124,107 @@ func TestArtifactDeleteOverMCP(t *testing.T) {
 	}
 	if _, out = call("artifact_list", nil); len(out["artifacts"].([]any)) != 0 {
 		t.Fatalf("list not empty: %v", out["artifacts"])
+	}
+}
+
+// GRS-44 under GRS-40: the server runs inside projects/alpha of a workspace
+// root. artifact_new tags the artifact alpha and writes it to the root's
+// cache (no .gears under projects/); artifact_delete by file name and by
+// full id removes row and file and leaves a tombstone for each.
+func TestArtifactDeleteProjectTaggedOverMCP(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	root := t.TempDir()
+	res, err := project.Init(root, "ws", "WS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := res.Project
+	alpha := filepath.Join(root, "projects", "alpha")
+	if err := os.MkdirAll(alpha, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", alpha, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	if _, err := project.Scan(p, nil); err != nil {
+		t.Fatal(err)
+	}
+	cur := project.Current(p, alpha)
+	if cur == nil {
+		t.Fatal("projects/alpha is not a current project")
+	}
+
+	srv := New(verbs.Ctx{Project: p, Agent: "tester", Current: cur}, "test")
+	ct, st := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	if _, err := srv.Connect(ctx, st, nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "t", Version: "0"}, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	call := func(name string, args map[string]any) verbs.Artifact {
+		t.Helper()
+		r, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		tc, _ := r.Content[0].(*mcp.TextContent)
+		if r.IsError {
+			t.Fatalf("%s: %s", name, tc.Text)
+		}
+		var a verbs.Artifact
+		if err := json.Unmarshal([]byte(tc.Text), &a); err != nil {
+			t.Fatalf("%s: %v %s", name, err, tc.Text)
+		}
+		return a
+	}
+
+	a := call("artifact_new", map[string]any{"prefix": "free", "title": "Doomed one"})
+	b := call("artifact_new", map[string]any{"prefix": "free", "title": "Doomed two"})
+	for _, x := range []verbs.Artifact{a, b} {
+		if x.ProjectID != cur.ID {
+			t.Fatalf("artifact %s tagged %q, want alpha %s", x.File, x.ProjectID, cur.ID)
+		}
+		if _, err := os.Stat(filepath.Join(p.ArtifactsDir(), x.File)); err != nil {
+			t.Fatalf("not in the root cache: %v", err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(alpha, ".gears")); !os.IsNotExist(err) {
+		t.Fatalf("a .gears appeared under projects/alpha: %v", err)
+	}
+
+	if got := call("artifact_delete", map[string]any{"artifact": a.File}); got.ID != a.ID || got.ProjectID != cur.ID || got.FilePresent {
+		t.Fatalf("delete by file: %+v", got)
+	}
+	if got := call("artifact_delete", map[string]any{"artifact": b.ID}); got.ID != b.ID {
+		t.Fatalf("delete by id: %+v", got)
+	}
+	for _, x := range []verbs.Artifact{a, b} {
+		if _, err := os.Stat(filepath.Join(p.ArtifactsDir(), x.File)); !os.IsNotExist(err) {
+			t.Fatalf("%s still on disk: %v", x.File, err)
+		}
+	}
+
+	r, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "artifact_list", Arguments: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tc, _ := r.Content[0].(*mcp.TextContent); strings.Contains(tc.Text, "doomed") {
+		t.Fatalf("list still has a deleted artifact: %s", tc.Text)
+	}
+	db, err := store.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var tombs int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM sync_deletes WHERE tbl = 'artifacts' AND id IN (?, ?)`, a.ID, b.ID).Scan(&tombs)
+	if tombs != 2 {
+		t.Fatalf("tombstones: %d, want 2", tombs)
 	}
 }

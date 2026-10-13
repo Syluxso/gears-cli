@@ -78,26 +78,59 @@ echo "== clone answers; workspace root sees it after sync, tagged alpha"
 ( cd "$C" && "$G" session new --kind decision "clone decided" >/dev/null && "$G" sync >/dev/null )
 ( cd "$WS" && "$G" sync >/dev/null && "$G" session list --json ) | python -c "import json,sys; e=[x for x in json.load(sys.stdin)['entries'] if x['text']=='clone decided']; assert len(e)==1 and e[0].get('projectId')=='$ALPHA_ID', e; print('ok: root has clone entry')"
 
-echo "== artifact delete: made in alpha (root cache), pushed, clone drops row and file"
-ART=free--doomed-note.md
-( cd "$A" && "$G" artifact new free "Doomed note" --json ) | python -c "import json,sys; a=json.load(sys.stdin); assert a['projectId']=='$ALPHA_ID' and '.gears' in a['path'] and 'projects' not in a['path'].split('.gears')[0][len('$WS'):], a; print('ok: artifact tagged alpha, in the root cache')"
-[ -f "$WS/.gears/artifacts/$ART" ] || fail "artifact not in the root cache"
+echo "== GRS-44: artifact delete in the single-root model: three alpha artifacts, deleted three ways, gone everywhere"
+# All three are made inside projects/alpha: one cache (the root's), tagged
+# alpha. One is deleted by short id from projects/alpha, one by file name
+# from a subdirectory of it, one by full id (--json, the MCP verb) at the root.
+DB="$WS/.gears/.gearbox/local.db"
+tombs() { python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(' '.join(sorted(r[0] for r in c.execute(\"SELECT id FROM sync_deletes WHERE tbl='artifacts'\"))))" "$DB"; }
+for n in 1 2 3; do
+  ( cd "$A" && "$G" artifact new free "Doomed note $n" --json ) | python -c "import json,sys; a=json.load(sys.stdin); assert a['projectId']=='$ALPHA_ID' and '.gears' in a['path'] and 'projects' not in a['path'].split('.gears')[0][len('$WS'):], a"
+  [ -f "$WS/.gears/artifacts/free--doomed-note-$n.md" ] || fail "artifact $n not in the root cache"
+done
+echo "ok: three artifacts tagged alpha, in the root cache"
 ( cd "$A" && "$G" sync >/dev/null )
-( cd "$C" && "$G" sync >/dev/null && "$G" artifact list | grep -q "$ART" ) || fail "clone did not receive the artifact"
-[ -f "$C/.gears/artifacts/$ART" ] || fail "clone has no file for $ART"
-ART_ID=$(cd "$WS" && "$G" artifact list --json | python -c "import json,sys; print([a['id'] for a in json.load(sys.stdin)['artifacts'] if a['file']=='$ART'][0])")
-( cd "$A" && "$G" artifact delete "${ART_ID: -8}" )
-[ ! -f "$WS/.gears/artifacts/$ART" ] || fail "root still has the file"
+( cd "$C" && "$G" sync >/dev/null && [ "$("$G" artifact list | grep -c "doomed-note")" = 3 ] ) || fail "clone did not receive the three artifacts"
+for n in 1 2 3; do
+  [ -f "$C/.gears/artifacts/free--doomed-note-$n.md" ] || fail "clone has no file for doomed-note-$n"
+done
+artid() { ( cd "$WS" && "$G" artifact list --json ) | python -c "import json,sys; print([a['id'] for a in json.load(sys.stdin)['artifacts'] if a['file']=='$1'][0])"; }
+ID1=$(artid free--doomed-note-1.md); ID2=$(artid free--doomed-note-2.md); ID3=$(artid free--doomed-note-3.md)
+( cd "$A" && "$G" artifact delete "${ID1: -8}" | grep -q "deleted ${ID1: -8}" ) || fail "delete by short id"
+( cd "$A/src" && "$G" artifact delete free--doomed-note-2.md | grep -q "free--doomed-note-2.md" ) || fail "delete by file name"
+( cd "$WS" && "$G" artifact delete "$ID3" --json ) | python -c "import json,sys; a=json.load(sys.stdin); assert a['id']=='$ID3' and a['projectId']=='$ALPHA_ID' and not a['filePresent'], a"
+for n in 1 2 3; do
+  [ ! -f "$WS/.gears/artifacts/free--doomed-note-$n.md" ] || fail "root still has doomed-note-$n"
+done
 ( cd "$WS" && "$G" artifact reconcile | grep -q "rows and files agree" ) || fail "root reconcile regenerated or adopted"
-( cd "$WS" && "$G" artifact list --json | grep -q "$ART" ) && fail "root still lists $ART"
-( cd "$A" && "$G" sync --json | python -c "import json,sys; r=json.load(sys.stdin); assert r['failed']==0, r; print('ok: delete pushed')" )
-CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$GEARS_API/api/v1/artifacts/$ART_ID")
-[ "$CODE" = "404" ] || fail "API still serves the artifact ($CODE)"
+( cd "$A" && "$G" artifact list --json | grep -q "doomed-note" ) && fail "root still lists a deleted artifact"
+[ "$(tombs)" = "$(printf '%s\n' "$ID1" "$ID2" "$ID3" | sort | tr '\n' ' ' | sed 's/ $//')" ] || fail "tombstones: $(tombs)"
+echo "ok: rows and files gone from the root cache; three tombstones wait for sync"
+( cd "$A" && "$G" sync --json | python -c "import json,sys; r=json.load(sys.stdin); assert r['failed']==0, r; print('ok: deletes pushed from projects/alpha')" )
+[ -z "$(tombs)" ] || fail "tombstones not cleared after push: $(tombs)"
+for id in "$ID1" "$ID2" "$ID3"; do
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$GEARS_API/api/v1/artifacts/$id")
+  [ "$CODE" = "404" ] || fail "API still serves $id ($CODE)"
+done
+curl -s -H "Authorization: Bearer $TOKEN" "$GEARS_API/api/v1/workspaces/$WS_ID/sync?cursor=0" | python -c "
+import json,sys
+ch=json.load(sys.stdin)['changes']
+for i in ['$ID1','$ID2','$ID3']:
+    d=[c for c in ch if c['table']=='artifacts' and c['id']==i and c.get('deleted')]
+    assert d, ('no soft-delete change for', i)
+print('ok: API answers 404 and its change log carries a soft delete for each')"
 ( cd "$C" && "$G" sync >/dev/null )
-[ ! -f "$C/.gears/artifacts/$ART" ] || fail "clone kept the file after the pulled delete"
+for n in 1 2 3; do
+  [ ! -f "$C/.gears/artifacts/free--doomed-note-$n.md" ] || fail "clone kept doomed-note-$n after the pulled delete"
+done
 ( cd "$C" && "$G" artifact reconcile | grep -q "rows and files agree" ) || fail "clone reconcile regenerated or adopted"
-( cd "$C" && "$G" artifact list --json | grep -q "$ART" ) && fail "clone still lists $ART"
-echo "ok: row and file gone on both machines; API row soft-deleted"
+( cd "$C" && "$G" artifact list --json | grep -q "doomed-note" ) && fail "clone still lists a deleted artifact"
+# Later syncs on either side bring nothing back.
+for d in "$C" "$WS" "$C" "$A"; do ( cd "$d" && "$G" sync >/dev/null ); done
+( cd "$WS" && "$G" artifact list --json | grep -q "doomed-note" ) && fail "root re-adopted a deleted artifact"
+( cd "$C" && "$G" artifact list --json | grep -q "doomed-note" ) && fail "clone re-adopted a deleted artifact"
+ls "$WS/.gears/artifacts" "$C/.gears/artifacts" | grep -q "doomed-note" && fail "a deleted file came back"
+echo "ok: rows and files gone on both machines and stay gone; API rows soft-deleted"
 
 echo "== GRS-40: one file name per workspace; a colliding row from elsewhere is cached beside, not over"
 SAME=free--same-name.md
