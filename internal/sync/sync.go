@@ -516,7 +516,7 @@ func evictForeign(db *sql.DB, p *project.Project, id, serverHash string, r *Repo
 	if _, err := db.Exec(`DELETE FROM artifacts WHERE id = ?`, id); err != nil {
 		return err
 	}
-	r.Notes = append(r.Notes, fmt.Sprintf("artifact %s belongs to another binding; local edits to %s kept as this binding's own", short(id), file))
+	r.Notes = append(r.Notes, fmt.Sprintf("artifact %s belongs to another binding; local copy of %s differs from the server, kept as this binding's own", short(id), file))
 	return nil
 }
 

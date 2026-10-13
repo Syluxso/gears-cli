@@ -285,8 +285,9 @@ func TestSyncSameFileTwoBindings(t *testing.T) {
 
 // A cache from before GRS-26 that took a workspace-level row in drops it on
 // the next pull of that row (the server keeps it), so it is never pushed back
-// under the project's id. A cached copy with local edits keeps its file and
-// is re-adopted as the project's own.
+// under the project's id. A cached copy whose body differs from the server's
+// (the root edited it since) keeps its file and is re-adopted as the
+// project's own.
 func TestSyncEvictsForeignArtifact(t *testing.T) {
 	dir := t.TempDir()
 	wres, err := project.Init(dir, "ws", "WS")
@@ -331,14 +332,16 @@ func TestSyncEvictsForeignArtifact(t *testing.T) {
 	for _, a := range []*artifact.Artifact{clean, edited} {
 		body, _ := os.ReadFile(a.Path)
 		if a.ID == edited.ID {
-			body = append(body, []byte("\nlocal edit\n")...)
+			body = append(body, []byte("\nolder cached copy\n")...)
 		}
+		// The cache's row agrees with its file, so Reconcile leaves it be.
+		localHash := artifact.Hash(string(body))
 		if err := os.WriteFile(filepath.Join(alpha.ArtifactsDir(), a.File), body, 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(`INSERT INTO artifacts (id, prefix, slug, file, title, status, created_at, created_by, updated_at, body_hash, file_present, shape_ok, shape_errors)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, '')`, a.ID, a.Prefix, a.Slug, a.File, a.Title, a.Status,
-			"2020-01-01T00:00:00Z", "tester", "2020-01-01T00:00:00Z", a.BodyHash); err != nil {
+			"2020-01-01T00:00:00Z", "tester", "2020-01-01T00:00:00Z", localHash); err != nil {
 			t.Fatal(err)
 		}
 	}
