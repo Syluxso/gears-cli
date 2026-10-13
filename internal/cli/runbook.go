@@ -130,6 +130,10 @@ var runbookListCmd = &cobra.Command{
 }
 
 func printRunSummary(r verbs.RunSummary) {
+	fmt.Println(runSummaryLine(r))
+}
+
+func runSummaryLine(r verbs.RunSummary) string {
 	cur := "—"
 	if r.Current != nil {
 		cur = fmt.Sprintf("step %d: %s", r.Current.Idx, r.Current.Text)
@@ -141,7 +145,7 @@ func printRunSummary(r verbs.RunSummary) {
 	if r.Branch != "" {
 		target += " @" + r.Branch
 	}
-	fmt.Printf("%s  %s%s  %s  %d/%d  %s\n", short(r.ID), r.Runbook, target, r.Agent, r.Done, r.Total, cur)
+	return fmt.Sprintf("%s  %s%s  %s  %d/%d  %s", short(r.ID), r.Runbook, target, r.Agent, r.Done, r.Total, cur)
 }
 
 func printRun(r *verbs.Run) {
