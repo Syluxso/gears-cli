@@ -37,6 +37,9 @@ type Card struct {
 	CreatedAt   string         `json:"createdAt"`
 	UpdatedAt   string         `json:"updatedAt"`
 	CompletedAt string         `json:"completedAt,omitempty"`
+	// ClosedAt is set while the card is closed (off the board, GRS-50).
+	ClosedAt       string `json:"closedAt,omitempty"`
+	StateChangedAt string `json:"stateChangedAt,omitempty"`
 }
 
 func cardOut(c card.Card) Card {
@@ -44,7 +47,8 @@ func cardOut(c card.Card) Card {
 		Size: c.Size, Priority: "P" + strconv.Itoa(c.Priority), Position: c.Position, Tags: nz(c.Tags), Assignee: c.Assignee,
 		Parent: c.ParentKey, DueAt: ts(c.DueAt), Estimate: c.Estimate, Body: c.Body, CardData: c.CardData,
 		Shaped: nz(c.Shaped()), Omitted: nz(c.Omitted()), Artifact: c.Artifact, External: c.External, CreatedBy: c.CreatedBy,
-		CreatedAt: ts(c.CreatedAt), UpdatedAt: ts(c.UpdatedAt), CompletedAt: ts(c.CompletedAt)}
+		CreatedAt: ts(c.CreatedAt), UpdatedAt: ts(c.UpdatedAt), CompletedAt: ts(c.CompletedAt),
+		ClosedAt: ts(c.ClosedAt), StateChangedAt: ts(c.StateChangedAt)}
 }
 
 type CardComment struct {
@@ -205,7 +209,8 @@ type CardListIn struct {
 	Assignee string `json:"assignee,omitempty" jsonschema:"Only cards owned by this agent label. 'me' means the calling agent."`
 	Parent   string `json:"parent,omitempty" jsonschema:"Only children of this card."`
 	Query    string `json:"q,omitempty" jsonschema:"Substring of key, title, body or sections. Use before creating a card: it may exist."`
-	All      bool   `json:"all,omitempty" jsonschema:"Include completed cards."`
+	All      bool   `json:"all,omitempty" jsonschema:"Include completed and closed cards."`
+	Closed   bool   `json:"closed,omitempty" jsonschema:"Only closed cards (taken off the board with card_close), in any state."`
 }
 
 type CardState struct {
@@ -214,6 +219,8 @@ type CardState struct {
 	Default  bool   `json:"default,omitempty"`
 	Terminal bool   `json:"terminal,omitempty"`
 	WIPLimit int    `json:"wipLimit,omitempty"`
+	// Closed counts the closed cards in this state, whatever the filter.
+	Closed int `json:"closed,omitempty"`
 }
 
 type CardListOut struct {
@@ -232,11 +239,16 @@ func CardList(c Ctx, in CardListIn) (*CardListOut, error) {
 	if err != nil {
 		return nil, err
 	}
-	cards, err := card.List(c.Project, card.Filter{State: in.State, Type: in.Type, Tag: in.Tag, Assignee: in.Assignee, Parent: in.Parent, Query: in.Query, All: in.All})
+	cards, err := card.List(c.Project, card.Filter{State: in.State, Type: in.Type, Tag: in.Tag, Assignee: in.Assignee, Parent: in.Parent, Query: in.Query,
+		All: in.All, Closed: in.Closed})
 	if err != nil {
 		return nil, err
 	}
 	tags, err := card.Tags(c.Project)
+	if err != nil {
+		return nil, err
+	}
+	closed, err := card.ClosedCounts(c.Project)
 	if err != nil {
 		return nil, err
 	}
@@ -247,9 +259,36 @@ func CardList(c Ctx, in CardListIn) (*CardListOut, error) {
 		out.Cards = append(out.Cards, cardOut(cd))
 	}
 	for _, s := range sts {
-		out.States = append(out.States, CardState{Name: s.Name, Count: counts[s.Name], Default: s.Default, Terminal: s.Terminal, WIPLimit: s.WIPLimit})
+		out.States = append(out.States, CardState{Name: s.Name, Count: counts[s.Name], Default: s.Default, Terminal: s.Terminal, WIPLimit: s.WIPLimit,
+			Closed: closed[s.Name]})
 	}
 	return out, nil
+}
+
+type CardCloseIn struct {
+	Key  string `json:"key" jsonschema:"Card key like GRS-14, a bare number, or the id."`
+	Note string `json:"note,omitempty" jsonschema:"Why it is closed (or reopened); lands in the card's activity."`
+}
+
+// CardClose takes a card off the board without deleting it: it keeps its
+// state and trail, and list, board and status hide it unless asked.
+func CardClose(c Ctx, in CardCloseIn) (*Card, error) {
+	cd, err := card.Close(c.Project, in.Key, in.Note, c.agent())
+	if err != nil {
+		return nil, err
+	}
+	o := cardOut(*cd)
+	return &o, nil
+}
+
+// CardReopen puts a closed card back on the board in the state it was in.
+func CardReopen(c Ctx, in CardCloseIn) (*Card, error) {
+	cd, err := card.Reopen(c.Project, in.Key, in.Note, c.agent())
+	if err != nil {
+		return nil, err
+	}
+	o := cardOut(*cd)
+	return &o, nil
 }
 
 type CardKeyIn struct {

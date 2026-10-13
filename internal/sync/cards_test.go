@@ -489,3 +489,118 @@ func TestSyncCardsDegradeWithoutCardTables(t *testing.T) {
 		})
 	}
 }
+
+// lastCardRow is the latest row pushed for a card, as gears-api would hand
+// it to another cache in the workspace.
+func (f *fakeAPI) lastCardRow(t *testing.T, id string) (map[string]any, api.Change) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := len(f.pushes) - 1; i >= 0; i-- {
+		for _, row := range rowsOf(f.pushes[i], "cards") {
+			if row["id"] == id {
+				b, err := json.Marshal(row)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return row, api.Change{Table: "cards", ID: id, Op: "upsert", Row: b}
+			}
+		}
+	}
+	t.Fatalf("card %s never pushed", id)
+	return nil, api.Change{}
+}
+
+// GRS-50: closedAt and stateChangedAt go up as RFC 3339 or null ("" here)
+// and come down onto another cache the same way, last write wins; a reopen
+// travels as closedAt null.
+func TestSyncCardsCloseRoundTrip(t *testing.T) {
+	f := &fakeAPI{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	cl := api.Anonymous(srv.URL)
+	ctx := context.Background()
+
+	a := rootProject(t)
+	done := newTask(t, a, "Done")
+	open := newTask(t, a, "Open")
+	if _, _, err := card.Move(a, done.Key, "Completed", "", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := card.Close(a, done.Key, "shipped", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, cl, a); err != nil {
+		t.Fatal(err)
+	}
+	local, err := card.Get(a, done.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, closedCh := f.lastCardRow(t, done.ID)
+	if row["closedAt"] != stamp(local.ClosedAt) || row["stateChangedAt"] != stamp(local.StateChangedAt) || row["closedAt"] == nil || row["stateChangedAt"] == nil {
+		t.Fatalf("closed row: closedAt %v stateChangedAt %v (local %v %v)", row["closedAt"], row["stateChangedAt"], local.ClosedAt, local.StateChangedAt)
+	}
+	row, openCh := f.lastCardRow(t, open.ID)
+	if v, ok := row["closedAt"]; !ok || v != nil {
+		t.Fatalf("open card closedAt: %v (want null)", v)
+	}
+	if row["stateChangedAt"] == nil {
+		t.Fatal("open card stateChangedAt null")
+	}
+
+	// Another machine pulls both.
+	b := rootProject(t)
+	if _, err := card.States(b); err != nil { // its seeded lanes, re-keyed to the API's
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, cl, b); err != nil {
+		t.Fatal(err)
+	}
+	f.queue([]api.Change{closedCh, openCh})
+	if r, err := Run(ctx, cl, b); err != nil || r.Applied != 2 {
+		t.Fatalf("pull: %+v %v", r, err)
+	}
+	got, err := card.Get(b, done.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Closed() || !got.ClosedAt.Equal(local.ClosedAt) || !got.StateChangedAt.Equal(local.StateChangedAt) || got.State != "Completed" {
+		t.Fatalf("pulled closed card: %+v", got)
+	}
+	if l, _ := card.List(b, card.Filter{}); len(l) != 1 || l[0].ID != open.ID {
+		t.Fatalf("pulled board shows closed card: %v", l)
+	}
+
+	// Reopened here: closedAt goes up as null and reopens it there.
+	if _, err := card.Reopen(a, done.Key, "", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, cl, a); err != nil {
+		t.Fatal(err)
+	}
+	row, reopenCh := f.lastCardRow(t, done.ID)
+	if v, ok := row["closedAt"]; !ok || v != nil {
+		t.Fatalf("reopened closedAt: %v (want null)", v)
+	}
+	f.queue([]api.Change{reopenCh})
+	if _, err := Run(ctx, cl, b); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = card.Get(b, done.ID); err != nil || got.Closed() {
+		t.Fatalf("reopen did not travel: %+v %v", got, err)
+	}
+
+	// An API that sends no stateChangedAt: a new card takes its updatedAt.
+	at := "2026-10-12T10:00:00Z"
+	id := "01a1bbbb-0000-7000-8000-000000000001"
+	raw, _ := json.Marshal(map[string]any{"id": id, "number": 40, "key": "WS-40", "type": "task", "title": "Old API", "cardData": map[string]any{},
+		"stateId": "", "state": "Backlog", "createdAt": at, "updatedAt": at})
+	f.queue([]api.Change{{Table: "cards", ID: id, Op: "upsert", Row: raw}})
+	if _, err := Run(ctx, cl, b); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = card.Get(b, id); err != nil || got.Closed() || stamp(got.StateChangedAt) != at {
+		t.Fatalf("old-API card: %+v %v", got, err)
+	}
+}

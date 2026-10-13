@@ -57,7 +57,15 @@ type Card struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	CompletedAt time.Time
+	// ClosedAt is when the card left the board (GRS-50); zero is open. A
+	// closed card keeps its state and is hidden from the default views.
+	ClosedAt time.Time
+	// StateChangedAt is when the card entered its current state.
+	StateChangedAt time.Time
 }
+
+// Closed reports a card taken off the board.
+func (c Card) Closed() bool { return !c.ClosedAt.IsZero() }
 
 // Shaped lists sections that carry content, in catalog order.
 func (c Card) Shaped() []string {
@@ -138,7 +146,7 @@ type Event struct {
 	ID     int64
 	At     time.Time
 	Agent  string
-	Kind   string // created | updated | moved | commented | tagged | linked | checklist | assigned | deleted
+	Kind   string // created | updated | moved | commented | tagged | linked | checklist | assigned | closed | reopened | deleted
 	Detail string
 }
 
@@ -496,10 +504,10 @@ func New(p *project.Project, in Input, agent string) (*Card, error) {
 	raw, _ := json.Marshal(data)
 	now := store.Now()
 	id := project.NewID()
-	if _, err := tx.Exec(`INSERT INTO cards (id, number, key, title, body, type, state_id, size, priority, position, card_data, assignee, parent_id, due_at, estimate_minutes, artifact, external_key, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)`,
+	if _, err := tx.Exec(`INSERT INTO cards (id, number, key, title, body, type, state_id, size, priority, position, card_data, assignee, parent_id, due_at, estimate_minutes, artifact, external_key, created_by, created_at, updated_at, state_changed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)`,
 		id, num, p.Prefix+"-"+strconv.Itoa(num), title, strings.TrimSpace(in.Body), typ, def.ID, size, pri, pos, string(raw),
-		strings.TrimSpace(in.Assignee), parentID, due, in.Estimate, strings.TrimSpace(in.Artifact), agent, now, now); err != nil {
+		strings.TrimSpace(in.Assignee), parentID, due, in.Estimate, strings.TrimSpace(in.Artifact), agent, now, now, now); err != nil {
 		return nil, err
 	}
 	for _, t := range normTags(in.Tags) {
@@ -547,15 +555,23 @@ func normTags(tags []string) []string {
 // ------------------------------------------------------------------ read
 
 const selectCols = `SELECT c.id, c.number, c.key, c.title, c.body, c.type, c.state_id, s.name, c.size, c.priority, c.position, c.card_data,
-	c.assignee, COALESCE(par.key, ''), c.due_at, c.estimate_minutes, c.artifact, c.external_key, c.created_by, c.created_at, c.updated_at, c.completed_at
+	c.assignee, COALESCE(par.key, ''), c.due_at, c.estimate_minutes, c.artifact, c.external_key, c.created_by, c.created_at, c.updated_at, c.completed_at,
+	c.closed_at, c.state_changed_at
 	FROM cards c JOIN card_states s ON s.id = c.state_id LEFT JOIN cards par ON par.id = c.parent_id WHERE c.deleted_at = ''`
 
 func scan(rows interface{ Scan(...any) error }) (*Card, error) {
 	var c Card
-	var raw, due, created, updated, completed string
+	var raw, due, created, updated, completed, closed, stateChanged string
 	if err := rows.Scan(&c.ID, &c.Number, &c.Key, &c.Title, &c.Body, &c.Type, &c.StateID, &c.State, &c.Size, &c.Priority, &c.Position, &raw,
-		&c.Assignee, &c.ParentKey, &due, &c.Estimate, &c.Artifact, &c.External, &c.CreatedBy, &created, &updated, &completed); err != nil {
+		&c.Assignee, &c.ParentKey, &due, &c.Estimate, &c.Artifact, &c.External, &c.CreatedBy, &created, &updated, &completed,
+		&closed, &stateChanged); err != nil {
 		return nil, err
+	}
+	if closed != "" {
+		c.ClosedAt = store.Parse(closed)
+	}
+	if stateChanged != "" {
+		c.StateChangedAt = store.Parse(stateChanged)
 	}
 	c.CardData = map[string]any{}
 	_ = json.Unmarshal([]byte(raw), &c.CardData)
@@ -593,7 +609,7 @@ func loadTags(db *sql.DB, cards []Card) error {
 }
 
 // Filter narrows a listing. Completed cards are hidden unless All or the
-// terminal state is named.
+// terminal state is named; closed cards are hidden unless All or Closed.
 type Filter struct {
 	State    string
 	Type     string
@@ -601,7 +617,8 @@ type Filter struct {
 	Assignee string
 	Parent   string
 	Query    string // substring of key, title, body
-	All      bool
+	All      bool   // completed and closed cards too
+	Closed   bool   // only closed cards, in any state
 }
 
 // List returns cards ordered by state position, then card position, then number.
@@ -631,8 +648,14 @@ func list(db *sql.DB, p *project.Project, f Filter) ([]Card, error) {
 		}
 		q += ` AND c.state_id = ?`
 		args = append(args, st.ID)
-	} else if !f.All {
+	} else if !f.All && !f.Closed {
 		q += ` AND s.is_terminal = 0`
+	}
+	switch {
+	case f.Closed:
+		q += ` AND c.closed_at <> ''`
+	case !f.All:
+		q += ` AND c.closed_at = ''`
 	}
 	if f.Type != "" {
 		t, err := NormalizeType(f.Type)
@@ -1010,7 +1033,8 @@ func Note(p *project.Project, cardID, agent, kind, detail string) error {
 
 // Move puts a card in a state at a position: "top", "bottom" (default), or
 // "after:<key>". Entering the terminal state stamps completed_at; leaving it
-// clears the stamp. A WIP limit on the target is a warning in the event,
+// clears the stamp. Changing state stamps state_changed_at; a closed card
+// moved into a non-terminal state is reopened. A WIP limit on the target is a warning in the event,
 // not a refusal: agents should see it, humans decide. A card with an active
 // run is refused: the run drives it.
 func Move(p *project.Project, key, state, position, agent string) (*Card, string, error) {
@@ -1083,6 +1107,9 @@ func move(p *project.Project, key, state, position, agent string, byRun bool) (*
 	if st.Terminal {
 		completed = now
 	}
+	// A closed card moved into a non-terminal state is back on the board
+	// (GRS-50; the API applies the same rule).
+	reopen := c.Closed() && !st.Terminal
 	tx, err := db.Begin()
 	if err != nil {
 		return nil, "", err
@@ -1094,6 +1121,16 @@ func move(p *project.Project, key, state, position, agent string, byRun bool) (*
 	if _, err := tx.Exec(`UPDATE cards SET state_id = ?, position = ?, completed_at = ?, updated_at = ?, updated_by = ? WHERE id = ?`, st.ID, pos, completed, now, agent, c.ID); err != nil {
 		return nil, "", err
 	}
+	if st.ID != c.StateID {
+		if _, err := tx.Exec(`UPDATE cards SET state_changed_at = ? WHERE id = ?`, now, c.ID); err != nil {
+			return nil, "", err
+		}
+	}
+	if reopen {
+		if _, err := tx.Exec(`UPDATE cards SET closed_at = '' WHERE id = ?`, c.ID); err != nil {
+			return nil, "", err
+		}
+	}
 	detail := c.State + " -> " + st.Name
 	if st.ID == c.StateID {
 		detail = "reordered in " + st.Name + " (" + position + ")"
@@ -1104,11 +1141,104 @@ func move(p *project.Project, key, state, position, agent string, byRun bool) (*
 	if err := logEvent(tx, c.ID, agent, "moved", detail); err != nil {
 		return nil, "", err
 	}
+	if reopen {
+		if err := logEvent(tx, c.ID, agent, "reopened", "moved to "+st.Name); err != nil {
+			return nil, "", err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, "", err
 	}
 	out, err := get(db, p, c.ID)
 	return out, warn, err
+}
+
+// Close takes a card off the board without deleting it (GRS-50). It keeps
+// its state and trail; list, board and status hide it unless asked. The
+// note, if any, is the activity line's detail.
+func Close(p *project.Project, key, note, agent string) (*Card, error) {
+	return setClosed(p, key, note, agent, true)
+}
+
+// Reopen puts a closed card back on the board in the state it was in.
+func Reopen(p *project.Project, key, note, agent string) (*Card, error) {
+	return setClosed(p, key, note, agent, false)
+}
+
+func setClosed(p *project.Project, key, note, agent string, closing bool) (*Card, error) {
+	agent = agentOr(agent)
+	db, err := store.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	c, err := get(db, p, key)
+	if err != nil {
+		return nil, err
+	}
+	if closing && c.Closed() {
+		return nil, fmt.Errorf("%s is closed already", c.Key)
+	}
+	if !closing && !c.Closed() {
+		return nil, fmt.Errorf("%s is not closed", c.Key)
+	}
+	if closing {
+		if id, who := activeRun(db, c.ID); id != "" {
+			return nil, fmt.Errorf("%s is driven by run %s (%s); finish or abandon the run first", c.Key, id[:8], who)
+		}
+	}
+	now := store.Now()
+	closedAt, kind := "", "reopened"
+	if closing {
+		closedAt, kind = now, "closed"
+	}
+	detail := strings.TrimSpace(note)
+	if detail == "" {
+		detail = "in " + c.State
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE cards SET closed_at = ?, updated_at = ?, updated_by = ? WHERE id = ?`, closedAt, now, agent, c.ID); err != nil {
+		return nil, err
+	}
+	if err := logEvent(tx, c.ID, agent, kind, detail); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return get(db, p, c.ID)
+}
+
+// ClosedCounts is the number of closed cards in each state, by state name.
+func ClosedCounts(p *project.Project) (map[string]int, error) {
+	out := map[string]int{}
+	if !store.Exists(p) {
+		return out, nil
+	}
+	db, err := store.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT s.name, COUNT(*) FROM cards c JOIN card_states s ON s.id = c.state_id
+		WHERE c.deleted_at = '' AND c.closed_at <> '' GROUP BY s.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var n int
+		if err := rows.Scan(&name, &n); err != nil {
+			return nil, err
+		}
+		out[name] = n
+	}
+	return out, rows.Err()
 }
 
 // Claim assigns the card to the agent and moves it to the first state after
@@ -1136,7 +1266,11 @@ func Claim(p *project.Project, key, agent string) (*Card, string, error) {
 		}
 	}
 	if curIdx > defIdx || defIdx+1 >= len(sts) || sts[defIdx+1].Terminal {
-		return c, "", nil
+		if c.Closed() {
+			// Claiming a closed card takes it back onto the board.
+			c, err = Reopen(p, c.Key, "claimed by "+agent, agent)
+		}
+		return c, "", err
 	}
 	return Move(p, c.Key, sts[defIdx+1].Name, "bottom", agent)
 }

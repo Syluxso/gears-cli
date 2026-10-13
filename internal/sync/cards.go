@@ -254,13 +254,14 @@ func collectCards(db *sql.DB, cs *cardSync, in *api.PushIn) error {
 	var cards []map[string]any
 	err = scanAll(db, `SELECT c.id, c.number, c.type, c.title, c.body, c.card_data, c.state_id, COALESCE(s.name, ''), c.size, c.priority, c.position,
 		c.assignee, c.parent_id, c.due_at, c.estimate_minutes, c.artifact, c.external_key, c.created_by, c.updated_by, c.created_at, c.updated_at,
-		c.completed_at, c.deleted_at
+		c.completed_at, c.deleted_at, c.closed_at, c.state_changed_at
 		FROM cards c LEFT JOIN card_states s ON s.id = c.state_id WHERE c.updated_at >= ? OR (c.deleted_at <> '' AND c.deleted_at >= ?)`,
 		[]any{since, since}, func(sc func(...any) error) error {
 			var id, typ, title, body, data, stateID, state, size, assignee, parent, due, artifact, external, createdBy, updatedBy, created, updated, completed, deleted string
+			var closed, stateChanged string
 			var number, pri, pos, est int
 			if err := sc(&id, &number, &typ, &title, &body, &data, &stateID, &state, &size, &pri, &pos, &assignee, &parent, &due, &est,
-				&artifact, &external, &createdBy, &updatedBy, &created, &updated, &completed, &deleted); err != nil {
+				&artifact, &external, &createdBy, &updatedBy, &created, &updated, &completed, &deleted, &closed, &stateChanged); err != nil {
 				return err
 			}
 			if updatedBy == "" {
@@ -274,7 +275,7 @@ func collectCards(db *sql.DB, cs *cardSync, in *api.PushIn) error {
 				"stateId": stateID, "state": state, "size": size, "priority": pri, "position": pos, "assigneeLabel": assignee,
 				"parentId": nullStr(parent), "dueAt": nullStr(due), "estimateMinutes": est, "artifact": artifact, "externalKey": external,
 				"tags": []string{}, "createdBy": createdBy, "updatedBy": updatedBy, "createdAt": created, "updatedAt": updated,
-				"completedAt": nullStr(completed)}
+				"completedAt": nullStr(completed), "closedAt": nullStr(closed), "stateChangedAt": nullStr(stateChanged)}
 			cards = append(cards, row)
 			if deleted != "" && deleted >= since {
 				del("cards", id)
@@ -562,6 +563,8 @@ type cardRow struct {
 	CreatedAt       time.Time       `json:"createdAt"`
 	UpdatedAt       time.Time       `json:"updatedAt"`
 	CompletedAt     *time.Time      `json:"completedAt"`
+	ClosedAt        *time.Time      `json:"closedAt"`       // GRS-50; null is open
+	StateChangedAt  *time.Time      `json:"stateChangedAt"` // when it entered its state
 }
 
 type commentRow struct {
@@ -753,8 +756,8 @@ func applyCardRow(db *sql.DB, c cardRow) (bool, error) {
 	}
 	applied := false
 	err := inTx(db, func(tx *sql.Tx) error {
-		var local string
-		err := tx.QueryRow(`SELECT updated_at FROM cards WHERE id = ?`, c.ID).Scan(&local)
+		var local, localStateChanged string
+		err := tx.QueryRow(`SELECT updated_at, state_changed_at FROM cards WHERE id = ?`, c.ID).Scan(&local, &localStateChanged)
 		exists := err == nil
 		if err != nil && err != sql.ErrNoRows {
 			return err
@@ -781,20 +784,33 @@ func applyCardRow(db *sql.DB, c cardRow) (bool, error) {
 		if c.CompletedAt != nil {
 			completed = stamp(*c.CompletedAt)
 		}
+		closed := ""
+		if c.ClosedAt != nil {
+			closed = stamp(*c.ClosedAt)
+		}
+		// An API that sends no stateChangedAt leaves the local stamp, or
+		// the row's last write for a card new here.
+		stateChanged := localStateChanged
+		if c.StateChangedAt != nil {
+			stateChanged = stamp(*c.StateChangedAt)
+		}
+		if stateChanged == "" {
+			stateChanged = upd
+		}
 		updatedBy := c.UpdatedBy
 		if updatedBy == "" {
 			updatedBy = c.CreatedBy
 		}
 		if _, err := tx.Exec(`INSERT INTO cards (id, number, key, title, body, type, state_id, size, priority, position, card_data, assignee, parent_id, due_at,
-				estimate_minutes, artifact, external_key, created_by, updated_by, created_at, updated_at, completed_at, deleted_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')
+				estimate_minutes, artifact, external_key, created_by, updated_by, created_at, updated_at, completed_at, closed_at, state_changed_at, deleted_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')
 			ON CONFLICT(id) DO UPDATE SET number = excluded.number, key = excluded.key, title = excluded.title, body = excluded.body, type = excluded.type,
 				state_id = excluded.state_id, size = excluded.size, priority = excluded.priority, position = excluded.position, card_data = excluded.card_data,
 				assignee = excluded.assignee, parent_id = excluded.parent_id, due_at = excluded.due_at, estimate_minutes = excluded.estimate_minutes,
 				artifact = excluded.artifact, external_key = excluded.external_key, updated_by = excluded.updated_by, updated_at = excluded.updated_at,
-				completed_at = excluded.completed_at, deleted_at = ''`,
+				completed_at = excluded.completed_at, closed_at = excluded.closed_at, state_changed_at = excluded.state_changed_at, deleted_at = ''`,
 			c.ID, c.Number, key, c.Title, c.Body, c.Type, stateID, c.Size, c.Priority, c.Position, data, c.AssigneeLabel, derefStr(c.ParentID), due,
-			c.EstimateMinutes, c.Artifact, c.ExternalKey, c.CreatedBy, updatedBy, stamp(c.CreatedAt), upd, completed); err != nil {
+			c.EstimateMinutes, c.Artifact, c.ExternalKey, c.CreatedBy, updatedBy, stamp(c.CreatedAt), upd, completed, closed, stateChanged); err != nil {
 			return err
 		}
 		if c.Tags != nil {

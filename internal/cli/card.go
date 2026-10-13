@@ -3,8 +3,10 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -37,6 +39,8 @@ var (
 	cardListParent   string
 	cardListQuery    string
 	cardListAll      bool
+	cardListClosed   bool
+	cardCloseNote    string
 
 	cardSetTitle string
 	cardSetBody  string
@@ -72,7 +76,9 @@ least one acceptance line, or the create is refused.
   gears card show GRS-3
   gears card claim GRS-3
   gears card comment GRS-3 "Tried X; result Y."
-  gears card move GRS-3 Testing`,
+  gears card move GRS-3 Testing
+  gears card close GRS-3 --note "shipped"      # off the board; list --closed shows it
+  gears card reopen GRS-3`,
 }
 
 // parseSet turns --set section.field=value into nested sections. A value of
@@ -128,7 +134,9 @@ func parseSections(raw string) (map[string]any, error) {
 	return m, nil
 }
 
-func printCardLine(c verbs.Card) {
+func printCardLine(c verbs.Card) { fprintCardLine(os.Stdout, c) }
+
+func fprintCardLine(w io.Writer, c verbs.Card) {
 	meta := []string{c.Type}
 	if c.Size != "" {
 		meta = append(meta, c.Size)
@@ -140,7 +148,63 @@ func printCardLine(c verbs.Card) {
 	if len(c.Tags) > 0 {
 		meta = append(meta, "#"+strings.Join(c.Tags, " #"))
 	}
-	fmt.Printf("%-8s %s  [%s]\n", c.Key, c.Title, strings.Join(meta, " "))
+	if c.ClosedAt != "" {
+		meta = append(meta, closedAge(c.ClosedAt))
+	}
+	fmt.Fprintf(w, "%-8s %s  [%s]\n", c.Key, c.Title, strings.Join(meta, " "))
+}
+
+// boardView is how card list prints: which lanes, and whether closed cards
+// are listed.
+type boardView struct {
+	State  string // only this lane
+	All    bool   // completed and closed cards listed too
+	Closed bool   // only closed cards
+}
+
+// printBoard prints the lanes in order. Closed cards are hidden unless
+// asked; every terminal lane says how many closed cards it holds. A
+// terminal lane's cards are listed only with --all or --state.
+func printBoard(w io.Writer, out *verbs.CardListOut, v boardView) {
+	for _, s := range out.States {
+		if v.State != "" && !strings.EqualFold(s.Name, v.State) {
+			continue
+		}
+		if v.Closed && s.Count == 0 {
+			continue
+		}
+		wip := ""
+		if s.WIPLimit > 0 {
+			wip = fmt.Sprintf("  wip %d", s.WIPLimit)
+		}
+		if s.Terminal && !v.All && !v.Closed && v.State == "" {
+			fmt.Fprintf(w, "\n%s  (--all lists them)\n", s.Name)
+			fmt.Fprintf(w, "  closed: %d\n", s.Closed)
+			continue
+		}
+		fmt.Fprintf(w, "\n%s (%d)%s\n", s.Name, s.Count, wip)
+		for _, cd := range out.Cards {
+			if cd.State == s.Name {
+				fmt.Fprint(w, "  ")
+				fprintCardLine(w, cd)
+			}
+		}
+		if s.Terminal && !v.Closed {
+			fmt.Fprintf(w, "  closed: %d\n", s.Closed)
+		}
+	}
+	if len(out.Tags) > 0 {
+		var parts []string
+		for t, n := range out.Tags {
+			parts = append(parts, fmt.Sprintf("%s %d", t, n))
+		}
+		fmt.Fprintf(w, "\ntags: %s\n", strings.Join(parts, ", "))
+	}
+}
+
+// closedAge is "closed 3d ago" for a card's closedAt.
+func closedAge(rfc string) string {
+	return "closed " + ago(parseTS(rfc), time.Now())
 }
 
 func printCardFull(f *verbs.CardFull) {
@@ -158,6 +222,9 @@ func printCardFull(f *verbs.CardFull) {
 	}
 	if c.External != "" {
 		fmt.Printf("  external %s", c.External)
+	}
+	if c.ClosedAt != "" {
+		fmt.Printf("  %s", closedAge(c.ClosedAt))
 	}
 	fmt.Println()
 	fmt.Println()
@@ -359,7 +426,7 @@ var cardListCmd = &cobra.Command{
 			return err
 		}
 		out, err := verbs.CardList(c, verbs.CardListIn{State: cardListState, Type: cardListType, Tag: cardListTag,
-			Assignee: cardListAssignee, Parent: cardListParent, Query: cardListQuery, All: cardListAll})
+			Assignee: cardListAssignee, Parent: cardListParent, Query: cardListQuery, All: cardListAll, Closed: cardListClosed})
 		if err != nil {
 			return err
 		}
@@ -367,37 +434,63 @@ var cardListCmd = &cobra.Command{
 			return nil
 		}
 		if len(out.Cards) == 0 {
+			if cardListClosed {
+				fmt.Println("no closed cards match")
+				return nil
+			}
 			fmt.Printf("no cards match (prefix %s). gears card new ... to add one\n", out.Prefix)
 			return nil
 		}
-		for _, s := range out.States {
-			if cardListState != "" && !strings.EqualFold(s.Name, cardListState) {
-				continue
-			}
-			if s.Terminal && !cardListAll && cardListState == "" {
-				continue
-			}
-			wip := ""
-			if s.WIPLimit > 0 {
-				wip = fmt.Sprintf("  wip %d", s.WIPLimit)
-			}
-			fmt.Printf("\n%s (%d)%s\n", s.Name, s.Count, wip)
-			for _, cd := range out.Cards {
-				if cd.State == s.Name {
-					fmt.Print("  ")
-					printCardLine(cd)
-				}
-			}
-		}
-		if len(out.Tags) > 0 {
-			var parts []string
-			for t, n := range out.Tags {
-				parts = append(parts, fmt.Sprintf("%s %d", t, n))
-			}
-			fmt.Printf("\ntags: %s\n", strings.Join(parts, ", "))
-		}
+		printBoard(os.Stdout, out, boardView{State: cardListState, All: cardListAll, Closed: cardListClosed})
 		return nil
 	},
+}
+
+// cardCloseCmd and cardReopenCmd take a card off the board and put it back
+// (GRS-50). A closed card keeps its state and trail.
+var cardCloseCmd = &cobra.Command{
+	Use:   "close <key>",
+	Short: "Take a card off the board without deleting it (--note why)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return closeOrReopen(args[0], true)
+	},
+}
+
+var cardReopenCmd = &cobra.Command{
+	Use:   "reopen <key>",
+	Short: "Put a closed card back on the board in its state",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return closeOrReopen(args[0], false)
+	},
+}
+
+func closeOrReopen(key string, closing bool) error {
+	c, err := ctx()
+	if err != nil {
+		return err
+	}
+	in := verbs.CardCloseIn{Key: key, Note: cardCloseNote}
+	var out *verbs.Card
+	if closing {
+		out, err = verbs.CardClose(c, in)
+	} else {
+		out, err = verbs.CardReopen(c, in)
+	}
+	if err != nil {
+		return err
+	}
+	if emit(out) {
+		return nil
+	}
+	printCardLine(*out)
+	if closing {
+		fmt.Printf("         closed in %s\n", out.State)
+	} else {
+		fmt.Printf("         reopened in %s\n", out.State)
+	}
+	return nil
 }
 
 var cardShowCmd = &cobra.Command{
@@ -791,7 +884,11 @@ func init() {
 	cardListCmd.Flags().StringVar(&cardListAssignee, "assignee", "", "only this agent (me = you)")
 	cardListCmd.Flags().StringVar(&cardListParent, "parent", "", "only children of this card")
 	cardListCmd.Flags().StringVarP(&cardListQuery, "q", "q", "", "substring search")
-	cardListCmd.Flags().BoolVar(&cardListAll, "all", false, "include completed cards")
+	cardListCmd.Flags().BoolVar(&cardListAll, "all", false, "include completed and closed cards")
+	cardListCmd.Flags().BoolVar(&cardListClosed, "closed", false, "only closed cards")
+
+	cardCloseCmd.Flags().StringVar(&cardCloseNote, "note", "", "why; lands in the card's activity")
+	cardReopenCmd.Flags().StringVar(&cardCloseNote, "note", "", "why; lands in the card's activity")
 
 	shapeFlags(cardUpdateCmd)
 	cardUpdateCmd.Flags().StringVar(&cardSetTitle, "title", "", "new title")
@@ -813,6 +910,6 @@ func init() {
 	cardStatesCmd.Flags().IntVar(&cardStateWIP, "wip", 0, "WIP limit for add")
 
 	cardCmd.AddCommand(cardShapesCmd, cardNewCmd, cardListCmd, cardShowCmd, cardUpdateCmd, cardMoveCmd, cardClaimCmd,
-		cardCommentCmd, cardTagCmd, cardLinkCmd, cardCheckCmd, cardStatesCmd, cardActivityCmd, cardDeleteCmd)
+		cardCommentCmd, cardTagCmd, cardLinkCmd, cardCheckCmd, cardStatesCmd, cardActivityCmd, cardCloseCmd, cardReopenCmd, cardDeleteCmd)
 	root.AddCommand(cardCmd)
 }

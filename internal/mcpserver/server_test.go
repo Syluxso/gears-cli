@@ -41,7 +41,7 @@ func TestCardToolsOverMCP(t *testing.T) {
 	for _, tl := range tools.Tools {
 		names[tl.Name] = true
 	}
-	for _, want := range []string{"card_shapes", "card_new", "card_list", "card_show", "card_update", "card_move", "card_claim", "card_comment", "card_tag", "card_link", "card_checklist", "card_states", "card_activity", "card_delete", "export"} {
+	for _, want := range []string{"card_shapes", "card_new", "card_list", "card_show", "card_update", "card_move", "card_claim", "card_comment", "card_tag", "card_link", "card_checklist", "card_states", "card_activity", "card_close", "card_reopen", "card_delete", "export"} {
 		if !names[want] {
 			t.Errorf("tool %s missing", want)
 		}
@@ -168,5 +168,51 @@ func TestCardToolsOverMCP(t *testing.T) {
 	_, status := call("status", map[string]any{})
 	if cs := status["cards"].(map[string]any); cs["open"] != float64(2) {
 		t.Fatalf("status cards: %v", cs)
+	}
+
+	// GRS-50: close takes MT-3 off the board, list and status with it.
+	if r, out = call("card_close", map[string]any{"key": "MT-3", "note": "not needed"}); r.IsError {
+		t.Fatalf("close: %s", errText(r))
+	} else if out["closedAt"] == nil || out["closedAt"] == "" || out["state"] != "Review" {
+		t.Fatalf("close: %v", out)
+	}
+	if r, _ = call("card_close", map[string]any{"key": "MT-3"}); !r.IsError || !strings.Contains(errText(r), "closed already") {
+		t.Fatalf("second close: %s", errText(r))
+	}
+	_, board = call("card_list", map[string]any{})
+	if cards := board["cards"].([]any); len(cards) != 1 || cards[0].(map[string]any)["key"] != "MT-2" {
+		t.Fatalf("open cards after close: %v", cards)
+	}
+	for _, st := range board["states"].([]any) {
+		if s := st.(map[string]any); s["name"] == "Review" && (s["closed"] != float64(1) || s["count"] != float64(1)) {
+			t.Fatalf("Review lane: %v", s)
+		}
+	}
+	_, closedBoard := call("card_list", map[string]any{"closed": true})
+	if cards := closedBoard["cards"].([]any); len(cards) != 1 || cards[0].(map[string]any)["key"] != "MT-3" {
+		t.Fatalf("closed cards: %v", cards)
+	}
+	_, allBoard := call("card_list", map[string]any{"all": true})
+	if cards := allBoard["cards"].([]any); len(cards) != 3 {
+		t.Fatalf("all cards: %d", len(cards))
+	}
+	_, status = call("status", map[string]any{})
+	if cs := status["cards"].(map[string]any); cs["open"] != float64(1) {
+		t.Fatalf("status cards after close: %v", cs)
+	}
+	if r, out = call("card_reopen", map[string]any{"key": "MT-3"}); r.IsError {
+		t.Fatalf("reopen: %s", errText(r))
+	} else if _, ok := out["closedAt"]; ok || out["state"] != "Review" {
+		t.Fatalf("reopen: %v", out)
+	}
+	if r, _ = call("card_reopen", map[string]any{"key": "MT-3"}); !r.IsError || !strings.Contains(errText(r), "not closed") {
+		t.Fatalf("second reopen: %s", errText(r))
+	}
+	// Closed, then moved into a non-terminal state: reopened.
+	call("card_close", map[string]any{"key": "MT-3"})
+	if r, out = call("card_move", map[string]any{"key": "MT-3", "state": "Backlog"}); r.IsError {
+		t.Fatalf("move closed: %s", errText(r))
+	} else if c := out["card"].(map[string]any); c["closedAt"] != nil || c["stateChangedAt"] == nil {
+		t.Fatalf("move did not reopen: %v", c)
 	}
 }

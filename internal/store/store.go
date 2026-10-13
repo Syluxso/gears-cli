@@ -109,6 +109,11 @@ var columns = []struct{ table, column, def string }{
 	{"card_checklist_items", "updated_at", "TEXT NOT NULL DEFAULT ''"},
 	{"cards", "updated_by", "TEXT NOT NULL DEFAULT ''"},
 	{"card_events", "uid", "TEXT NOT NULL DEFAULT ''"},
+	// GRS-50: cards close. closed_at is when a card left the board ("" is
+	// open); state_changed_at is when it entered its current state, which
+	// the API's 7-day auto-close of terminal cards reads.
+	{"cards", "closed_at", "TEXT NOT NULL DEFAULT ''"},
+	{"cards", "state_changed_at", "TEXT NOT NULL DEFAULT ''"},
 }
 
 // backfill runs once, right after its column is added: rows from before the
@@ -118,6 +123,8 @@ var backfill = map[string][]string{
 	"card_checklists.updated_at":      {`UPDATE card_checklists SET updated_at = created_at WHERE updated_at = ''`},
 	"card_checklist_items.updated_at": {`UPDATE card_checklist_items SET updated_at = CASE WHEN done_at > created_at THEN done_at ELSE created_at END WHERE updated_at = ''`},
 	"cards.updated_by":                {`UPDATE cards SET updated_by = created_by WHERE updated_by = ''`},
+	// The best a row from before GRS-50 can say: its last write.
+	"cards.state_changed_at": {`UPDATE cards SET state_changed_at = updated_at WHERE state_changed_at = ''`},
 }
 
 // after the columns: indexes on added columns.
