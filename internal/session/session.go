@@ -5,6 +5,7 @@
 package session
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"strings"
@@ -18,13 +19,25 @@ import (
 // free-form tag field, so the log stays scannable.
 var Kinds = []string{"done", "decision", "problem", "next"}
 
-// Entry is one line of the log.
+// Entry is one line of the log. ID is a UUID v7 minted when the entry is
+// written; it is the same on every machine the entry syncs to. The SQLite
+// rowid is private to one cache and never leaves this package.
 type Entry struct {
-	ID    int64
+	ID    string
 	At    time.Time
 	Agent string
 	Kind  string
 	Text  string
+}
+
+// Short is the id shown in listings and given as runbook evidence: the last
+// eight hex digits. A v7 id's leading digits are its timestamp, so entries
+// written in the same minute share a prefix; the tail is random.
+func (e Entry) Short() string {
+	if len(e.ID) < 8 {
+		return e.ID
+	}
+	return e.ID[len(e.ID)-8:]
 }
 
 // DefaultAgent is the label used when none is given: $GEARS_AGENT, else
@@ -56,50 +69,96 @@ func Append(p *project.Project, kind, agent, text string) (*Entry, error) {
 	defer db.Close()
 
 	at := store.Now()
-	res, err := db.Exec(
-		`INSERT INTO session_entries (at, agent, kind, text) VALUES (?, ?, ?, ?)`,
-		at, agent, kind, text,
+	id := project.NewID()
+	if _, err := db.Exec(
+		`INSERT INTO session_entries (at, agent, kind, text, uid) VALUES (?, ?, ?, ?, ?)`,
+		at, agent, kind, text, id,
+	); err != nil {
+		return nil, err
+	}
+	return &Entry{ID: id, At: store.Parse(at), Agent: agent, Kind: kind, Text: text}, nil
+}
+
+// EnsureUIDs gives every entry written before ids were minted at append time
+// its v7 id, and replaces the hex placeholders an older sync backfilled.
+// Idempotent; cheap when there is nothing to fix.
+func EnsureUIDs(db *sql.DB) error {
+	rows, err := db.Query(`SELECT id FROM session_entries WHERE uid = '' OR length(uid) = 32`)
+	if err != nil {
+		return err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	for _, id := range ids {
+		if _, err := db.Exec(`UPDATE session_entries SET uid = ? WHERE id = ?`, project.NewID(), id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Exists reports whether an entry is in the log. Runs use it to verify
+// "log a session entry" evidence.
+func Exists(p *project.Project, ref string) bool {
+	_, err := Find(p, ref)
+	return err == nil
+}
+
+// Find returns one entry by full id, or by a unique leading or trailing run
+// of at least six characters (listings show the last eight), so a run can
+// check who wrote it and when. A leading # is ignored.
+func Find(p *project.Project, ref string) (*Entry, error) {
+	ref = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(ref), "#"))
+	if len(ref) < 6 {
+		return nil, fmt.Errorf("session entry %q: give at least six characters of its id", ref)
+	}
+	if !store.Exists(p) {
+		return nil, fmt.Errorf("session entry %q not found", ref)
+	}
+	db, err := store.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	if err := EnsureUIDs(db); err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(
+		`SELECT uid, at, agent, kind, text FROM session_entries WHERE uid = ? OR uid LIKE ? OR uid LIKE ?`,
+		ref, ref+"%", "%"+ref,
 	)
 	if err != nil {
 		return nil, err
 	}
-	id, _ := res.LastInsertId()
-	return &Entry{ID: id, At: store.Parse(at), Agent: agent, Kind: kind, Text: text}, nil
-}
-
-// Exists reports whether an entry id is in the log. Runs use it to verify
-// "log a session entry" evidence.
-func Exists(p *project.Project, id int64) bool {
-	if !store.Exists(p) {
-		return false
+	defer rows.Close()
+	var hits []Entry
+	for rows.Next() {
+		var e Entry
+		var at string
+		if err := rows.Scan(&e.ID, &at, &e.Agent, &e.Kind, &e.Text); err != nil {
+			return nil, err
+		}
+		e.At = store.Parse(at)
+		hits = append(hits, e)
 	}
-	db, err := store.Open(p)
-	if err != nil {
-		return false
-	}
-	defer db.Close()
-	var n int
-	_ = db.QueryRow(`SELECT COUNT(*) FROM session_entries WHERE id = ?`, id).Scan(&n)
-	return n == 1
-}
-
-// Find returns one entry by id, so a run can check who wrote it and when.
-func Find(p *project.Project, id int64) (*Entry, error) {
-	if !store.Exists(p) {
-		return nil, fmt.Errorf("session entry %d not found", id)
-	}
-	db, err := store.Open(p)
-	if err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	defer db.Close()
-	var e Entry
-	var at string
-	if err := db.QueryRow(`SELECT id, at, agent, kind, text FROM session_entries WHERE id = ?`, id).Scan(&e.ID, &at, &e.Agent, &e.Kind, &e.Text); err != nil {
-		return nil, fmt.Errorf("session entry %d not found", id)
+	switch len(hits) {
+	case 0:
+		return nil, fmt.Errorf("session entry %q not found", ref)
+	case 1:
+		return &hits[0], nil
 	}
-	e.At = store.Parse(at)
-	return &e, nil
+	return nil, fmt.Errorf("session entry %q is ambiguous; give more of its id", ref)
 }
 
 // Today returns today's entries (local calendar day), oldest first.
@@ -128,9 +187,12 @@ func since(p *project.Project, start time.Time) ([]Entry, error) {
 		return nil, err
 	}
 	defer db.Close()
+	if err := EnsureUIDs(db); err != nil {
+		return nil, err
+	}
 
 	rows, err := db.Query(
-		`SELECT id, at, agent, kind, text FROM session_entries WHERE at >= ? ORDER BY at, id`,
+		`SELECT uid, at, agent, kind, text FROM session_entries WHERE at >= ? ORDER BY at, id`,
 		start.UTC().Format(time.RFC3339),
 	)
 	if err != nil {

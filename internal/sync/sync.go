@@ -19,6 +19,7 @@ import (
 	"github.com/Syluxso/gears-cli/internal/artifact"
 	"github.com/Syluxso/gears-cli/internal/gitx"
 	"github.com/Syluxso/gears-cli/internal/project"
+	"github.com/Syluxso/gears-cli/internal/session"
 	"github.com/Syluxso/gears-cli/internal/store"
 )
 
@@ -203,11 +204,9 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 	}
 	rows.Close()
 
-	// Session entries: give every row a uid once, then push the new ones.
-	if _, err := db.Exec(`UPDATE session_entries SET uid = lower(hex(randomblob(16))) WHERE uid = ''`); err != nil {
-		return err
-	}
-	if err := fixUIDs(db); err != nil {
+	// Session entries: rows from before ids were minted at append get one,
+	// then the new ones are pushed.
+	if err := session.EnsureUIDs(db); err != nil {
 		return err
 	}
 	rows, err = db.Query(`SELECT uid, at, agent, kind, text, project_id FROM session_entries WHERE at > ?`, since)
@@ -287,35 +286,6 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 		}
 	}
 	return setState(db, "pushed_at", now)
-}
-
-// fixUIDs turns the hex blobs from the SQL backfill into v7 uuids. SQLite
-// cannot mint v7; this runs once per row.
-func fixUIDs(db *sql.DB) error {
-	rows, err := db.Query(`SELECT id, uid FROM session_entries WHERE length(uid) = 32`)
-	if err != nil {
-		return err
-	}
-	type fix struct {
-		id  int64
-		uid string
-	}
-	var fixes []fix
-	for rows.Next() {
-		var f fix
-		if err := rows.Scan(&f.id, &f.uid); err != nil {
-			rows.Close()
-			return err
-		}
-		fixes = append(fixes, f)
-	}
-	rows.Close()
-	for _, f := range fixes {
-		if _, err := db.Exec(`UPDATE session_entries SET uid = ? WHERE id = ?`, project.NewID(), f.id); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // ------------------------------------------------------------------ pull

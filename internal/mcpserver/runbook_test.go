@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -37,6 +38,9 @@ func TestSingleTicketRunOverMCP(t *testing.T) {
 	git(t, dir, "add", ".")
 	git(t, dir, "commit", "-q", "-m", "init")
 	oldSha := git(t, dir, "rev-parse", "HEAD")
+	// Commit times are whole seconds; without this the run can start in the
+	// same second as oldSha and the "predates this run" check cannot see it.
+	time.Sleep(1100 * time.Millisecond)
 
 	res, err := project.Init(dir, "rbtest", "RB")
 	if err != nil {
@@ -157,7 +161,7 @@ func TestSingleTicketRunOverMCP(t *testing.T) {
 
 	// Step 4: the session step logs the text itself.
 	out = must(alice, "runbook_step_done", map[string]any{"evidence": "Implemented the thing"})
-	if !strings.HasPrefix(out["step"].(map[string]any)["evidence"].(string), "#") {
+	if ev := out["step"].(map[string]any)["evidence"].(string); len(ev) != 36 || strings.Count(ev, "-") != 4 {
 		t.Fatalf("session step: %v", out)
 	}
 

@@ -43,7 +43,7 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 	add(s, c, "card_activity", "Recent events across the board, newest first: who did what to which card.", verbs.CardActivity)
 	add(s, c, "card_delete", "Soft-delete a card. Its number is never reused; children are detached.", verbs.CardDelete)
 
-	add(s, c, "session_new", "Append one entry to today's session log. Kinds: done, decision, problem, next. Write as the work happens. Returns the entry id, which a runbook step with check=session accepts as evidence.", verbs.SessionNew)
+	add(s, c, "session_new", "Append one entry to today's session log. Kinds: done, decision, problem, next. Write as the work happens. Returns the entry id (a UUID, the same on every machine) and short (its last 8 hex digits); a runbook step with check=session accepts either as evidence.", verbs.SessionNew)
 	add(s, c, "session_list", "Session entries from the last N days (default 3), oldest first, every agent folded by time.", verbs.SessionList)
 
 	add(s, c, "artifact_new", "Create an artifact: the row first, then a file seeded from its shape. Prefixes: adr (numbered, never rewritten), story, idea, index, free. The new file fails its shape until its sections are filled; fill it, then artifact_validate.", verbs.ArtifactNew)

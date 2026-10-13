@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
+	"regexp"
 	"strings"
 	"time"
 
@@ -28,6 +28,10 @@ import (
 	"github.com/Syluxso/gears-cli/internal/session"
 	"github.com/Syluxso/gears-cli/internal/store"
 )
+
+// sessionRef is evidence that names an existing entry (its id, or six or more
+// hex digits of it, optionally after #) rather than text to log.
+var sessionRef = regexp.MustCompile(`^#?[0-9a-fA-F-]{6,36}$`)
 
 // Kinds is the whole step vocabulary.
 var Kinds = []string{"ask", "do", "gears", "git", "gate"}
@@ -842,24 +846,24 @@ func perform(p *project.Project, r *Run, st *RunStep, evidence, agent string) (*
 		if evidence == "" {
 			return nil, fmt.Errorf("give the text to log")
 		}
-		if id, err := strconv.ParseInt(strings.TrimPrefix(evidence, "#"), 10, 64); err == nil {
-			e, err := session.Find(p, id)
+		if sessionRef.MatchString(evidence) {
+			e, err := session.Find(p, evidence)
 			if err != nil {
 				return nil, err
 			}
 			if e.Agent != r.Agent {
-				return nil, fmt.Errorf("session entry #%d was written by %s, not this run's agent", id, e.Agent)
+				return nil, fmt.Errorf("session entry #%s was written by %s, not this run's agent", e.Short(), e.Agent)
 			}
 			if e.At.Before(st.StartedAt) {
-				return nil, fmt.Errorf("session entry #%d predates this step", id)
+				return nil, fmt.Errorf("session entry #%s predates this step", e.Short())
 			}
-			return &result{verified: true, note: "session entry exists", evidence: "#" + strconv.FormatInt(id, 10)}, nil
+			return &result{verified: true, note: "session entry exists", evidence: e.ID}, nil
 		}
 		e, err := session.Append(p, "done", agent, evidence)
 		if err != nil {
 			return nil, err
 		}
-		return &result{verified: true, note: "logged session entry", evidence: "#" + strconv.FormatInt(e.ID, 10)}, nil
+		return &result{verified: true, note: "logged session entry", evidence: e.ID}, nil
 	case "desk":
 		if evidence == "" {
 			return nil, fmt.Errorf("give the desk item id")

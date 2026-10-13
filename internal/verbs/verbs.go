@@ -292,7 +292,10 @@ func DeskDismiss(c Ctx, in DeskIDIn) (*DeskItem, error) {
 // --------------------------------------------------------------- session
 
 type SessionLine struct {
-	ID    int64  `json:"id"`
+	// ID is the entry's UUID v7, the same on every machine. Short is its last
+	// eight hex digits, enough to name it in a runbook step or a message.
+	ID    string `json:"id"`
+	Short string `json:"short"`
 	At    string `json:"at"`
 	Agent string `json:"agent"`
 	Kind  string `json:"kind"`
@@ -300,7 +303,7 @@ type SessionLine struct {
 }
 
 func sessionLine(e session.Entry) SessionLine {
-	return SessionLine{ID: e.ID, At: ts(e.At), Agent: e.Agent, Kind: e.Kind, Text: e.Text}
+	return SessionLine{ID: e.ID, Short: e.Short(), At: ts(e.At), Agent: e.Agent, Kind: e.Kind, Text: e.Text}
 }
 
 type SessionNewIn struct {
@@ -778,7 +781,7 @@ type RunbookListIn struct{}
 type RunbookListOut struct {
 	Runbooks   []Runbook           `json:"runbooks"`
 	Active     []RunSummary        `json:"activeRuns"`
-	Builtins   []string            `json:"builtins"` // shipped runbooks a project may copy
+	Builtins   []string            `json:"builtins"`   // shipped runbooks a project may copy
 	Vocabulary map[string][]string `json:"vocabulary"` // kind -> checks
 	Rules      []string            `json:"rules"`
 }
@@ -858,7 +861,7 @@ func (c Ctx) resolveRun(key string) (*runbook.Run, error) {
 
 type RunStepDoneIn struct {
 	RunRef
-	Evidence string `json:"evidence,omitempty" jsonschema:"What the step's check asks for. branch: name (default: current). commit: sha (default: HEAD). session: the text to log, or an entry id. desk: item id. artifact: file. ask or no check: the answer or a note. gears card:<State>, gate, pushed, merged, clean: none needed."`
+	Evidence string `json:"evidence,omitempty" jsonschema:"What the step's check asks for. branch: name (default: current). commit: sha (default: HEAD). session: the text to log, or an entry id (full, or its 8-digit short). desk: item id. artifact: file. ask or no check: the answer or a note. gears card:<State>, gate, pushed, merged, clean: none needed."`
 }
 
 type RunTakeoverIn struct {

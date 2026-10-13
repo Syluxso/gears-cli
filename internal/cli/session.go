@@ -46,7 +46,7 @@ Kinds:
 		if emit(out) {
 			return nil
 		}
-		fmt.Printf("%d  %s  %s  %s  %s\n", out.ID, hhmm(out.At), out.Agent, out.Kind, out.Text)
+		fmt.Printf("%s  %s  %s  %s  %s\n", out.Short, hhmm(out.At), out.Agent, out.Kind, out.Text)
 		return nil
 	},
 }
@@ -77,7 +77,7 @@ var sessionListCmd = &cobra.Command{
 				day = d
 				fmt.Printf("\n%s\n", day)
 			}
-			fmt.Printf("  %-4d %s  %-9s %-8s %s\n", e.ID, hhmm(e.At), e.Agent, e.Kind, e.Text)
+			fmt.Printf("  %s  %s  %-9s %-8s %s\n", e.Short, hhmm(e.At), e.Agent, e.Kind, e.Text)
 		}
 		return nil
 	},
