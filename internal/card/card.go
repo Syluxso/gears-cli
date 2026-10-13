@@ -236,7 +236,7 @@ func AddState(p *project.Project, name string, wip int) ([]State, error) {
 	pos := len(sts)
 	if n := len(sts); n > 0 && sts[n-1].Terminal {
 		pos = sts[n-1].Position
-		if _, err := db.Exec(`UPDATE card_states SET position = position + 1 WHERE position >= ?`, pos); err != nil {
+		if _, err := db.Exec(`UPDATE card_states SET position = position + 1, updated_at = ? WHERE position >= ?`, store.Now(), pos); err != nil {
 			return nil, err
 		}
 	}
@@ -367,6 +367,9 @@ func RemoveState(p *project.Project, name string) ([]State, error) {
 		return nil, fmt.Errorf("%s holds %d card(s); move them first", st.Name, n)
 	}
 	if _, err := db.Exec(`DELETE FROM card_states WHERE id = ?`, st.ID); err != nil {
+		return nil, err
+	}
+	if err := tombstone(db, "card_states", st.ID); err != nil {
 		return nil, err
 	}
 	return states(db)
@@ -923,8 +926,8 @@ func Update(p *project.Project, key string, patch Patch, agent string) (*Card, e
 		return nil, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`UPDATE cards SET title = ?, body = ?, type = ?, size = ?, priority = ?, assignee = ?, estimate_minutes = ?, artifact = ?, external_key = ?, card_data = ?, updated_at = ? WHERE id = ?`,
-		c.Title, c.Body, c.Type, c.Size, c.Priority, c.Assignee, c.Estimate, c.Artifact, c.External, string(raw), now, c.ID); err != nil {
+	if _, err := tx.Exec(`UPDATE cards SET title = ?, body = ?, type = ?, size = ?, priority = ?, assignee = ?, estimate_minutes = ?, artifact = ?, external_key = ?, card_data = ?, updated_at = ?, updated_by = ? WHERE id = ?`,
+		c.Title, c.Body, c.Type, c.Size, c.Priority, c.Assignee, c.Estimate, c.Artifact, c.External, string(raw), now, agent, c.ID); err != nil {
 		return nil, err
 	}
 	if parentSet {
@@ -1088,7 +1091,7 @@ func move(p *project.Project, key, state, position, agent string, byRun bool) (*
 	if _, err := tx.Exec(`UPDATE cards SET position = position + 1 WHERE state_id = ? AND position >= ? AND deleted_at = '' AND id <> ?`, st.ID, pos, c.ID); err != nil {
 		return nil, "", err
 	}
-	if _, err := tx.Exec(`UPDATE cards SET state_id = ?, position = ?, completed_at = ?, updated_at = ? WHERE id = ?`, st.ID, pos, completed, now, c.ID); err != nil {
+	if _, err := tx.Exec(`UPDATE cards SET state_id = ?, position = ?, completed_at = ?, updated_at = ?, updated_by = ? WHERE id = ?`, st.ID, pos, completed, now, agent, c.ID); err != nil {
 		return nil, "", err
 	}
 	detail := c.State + " -> " + st.Name
@@ -1172,7 +1175,7 @@ func Delete(p *project.Project, key, agent string) (*Card, error) {
 		return nil, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`UPDATE cards SET deleted_at = ?, updated_at = ? WHERE id = ?`, now, now, c.ID); err != nil {
+	if _, err := tx.Exec(`UPDATE cards SET deleted_at = ?, updated_at = ?, updated_by = ? WHERE id = ?`, now, now, agent, c.ID); err != nil {
 		return nil, err
 	}
 	if _, err := tx.Exec(`UPDATE cards SET parent_id = '' WHERE parent_id = ?`, c.ID); err != nil {
@@ -1290,7 +1293,7 @@ func Tag(p *project.Project, key string, add, remove []string, agent string) (*C
 	if len(detail) == 0 {
 		return c, nil
 	}
-	if _, err := tx.Exec(`UPDATE cards SET updated_at = ? WHERE id = ?`, store.Now(), c.ID); err != nil {
+	if _, err := tx.Exec(`UPDATE cards SET updated_at = ?, updated_by = ? WHERE id = ?`, store.Now(), agent, c.ID); err != nil {
 		return nil, err
 	}
 	if err := logEvent(tx, c.ID, agent, "tagged", strings.Join(detail, " ")); err != nil {
@@ -1384,8 +1387,8 @@ func AddLink(p *project.Project, key, kind, target, url, title, agent string) (*
 		return nil, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`INSERT INTO card_links (id, card_id, kind, target_card_id, url, title, agent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		l.ID, c.ID, kind, targetID, l.URL, l.Title, agent, now); err != nil {
+	if _, err := tx.Exec(`INSERT INTO card_links (id, card_id, kind, target_card_id, url, title, agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		l.ID, c.ID, kind, targetID, l.URL, l.Title, agent, now, now); err != nil {
 		return nil, err
 	}
 	detail := kind + " " + l.Target + l.URL
@@ -1415,11 +1418,21 @@ func RemoveLink(p *project.Project, key, linkID, agent string) error {
 	if err != nil {
 		return err
 	}
-	res, err := db.Exec(`DELETE FROM card_links WHERE (card_id = ? OR target_card_id = ?) AND id LIKE ?`, c.ID, c.ID, strings.TrimSpace(linkID)+"%")
+	rows, err := db.Query(`SELECT id FROM card_links WHERE (card_id = ? OR target_card_id = ?) AND id LIKE ?`, c.ID, c.ID, strings.TrimSpace(linkID)+"%")
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if len(ids) == 0 {
 		return fmt.Errorf("no link %q on %s", linkID, c.Key)
 	}
 	tx, err := db.Begin()
@@ -1427,6 +1440,14 @@ func RemoveLink(p *project.Project, key, linkID, agent string) error {
 		return err
 	}
 	defer tx.Rollback()
+	for _, id := range ids {
+		if _, err := tx.Exec(`DELETE FROM card_links WHERE id = ?`, id); err != nil {
+			return err
+		}
+		if err := tombstone(tx, "card_links", id); err != nil {
+			return err
+		}
+	}
 	if err := logEvent(tx, c.ID, agent, "linked", "removed "+linkID); err != nil {
 		return err
 	}
@@ -1501,7 +1522,7 @@ func AddChecklist(p *project.Project, key, title string, items []string, agent s
 		return nil, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`INSERT INTO card_checklists (id, card_id, title, position, created_at) VALUES (?, ?, ?, ?, ?)`, cl.ID, c.ID, title, n, now); err != nil {
+	if _, err := tx.Exec(`INSERT INTO card_checklists (id, card_id, title, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, cl.ID, c.ID, title, n, now, now); err != nil {
 		return nil, err
 	}
 	for i, it := range items {
@@ -1510,7 +1531,7 @@ func AddChecklist(p *project.Project, key, title string, items []string, agent s
 			continue
 		}
 		id := project.NewID()
-		if _, err := tx.Exec(`INSERT INTO card_checklist_items (id, checklist_id, title, done, position, created_at) VALUES (?, ?, ?, 0, ?, ?)`, id, cl.ID, it, i, now); err != nil {
+		if _, err := tx.Exec(`INSERT INTO card_checklist_items (id, checklist_id, title, done, position, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?, ?)`, id, cl.ID, it, i, now, now); err != nil {
 			return nil, err
 		}
 		cl.Items = append(cl.Items, ChecklistItem{ID: id, Title: it, Position: i})
@@ -1569,8 +1590,9 @@ func AddItem(p *project.Project, key, checklist, title, agent string) (*Checklis
 		return nil, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`INSERT INTO card_checklist_items (id, checklist_id, title, done, position, created_at) VALUES (?, ?, ?, 0, ?, ?)`,
-		project.NewID(), cl.ID, title, len(cl.Items), store.Now()); err != nil {
+	now := store.Now()
+	if _, err := tx.Exec(`INSERT INTO card_checklist_items (id, checklist_id, title, done, position, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?, ?)`,
+		project.NewID(), cl.ID, title, len(cl.Items), now, now); err != nil {
 		return nil, err
 	}
 	if err := logEvent(tx, c.ID, agent, "checklist", cl.Title+": + "+title); err != nil {
@@ -1625,7 +1647,7 @@ func Tick(p *project.Project, key, checklist, item string, done bool, agent stri
 		return nil, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`UPDATE card_checklist_items SET done = ?, done_at = ?, done_by = ? WHERE id = ?`, b2i(done), doneAt, doneBy, hit.ID); err != nil {
+	if _, err := tx.Exec(`UPDATE card_checklist_items SET done = ?, done_at = ?, done_by = ?, updated_at = ? WHERE id = ?`, b2i(done), doneAt, doneBy, now, hit.ID); err != nil {
 		return nil, err
 	}
 	mark := "[x] "
@@ -1666,6 +1688,10 @@ func RemoveChecklist(p *project.Project, key, checklist, agent string) error {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM card_checklists WHERE id = ?`, cl.ID); err != nil {
+		return err
+	}
+	// The API deletes the items with their checklist.
+	if err := tombstone(tx, "card_checklists", cl.ID); err != nil {
 		return err
 	}
 	if err := logEvent(tx, c.ID, agent, "checklist", "removed "+cl.Title); err != nil {
@@ -1721,7 +1747,14 @@ type execer interface {
 }
 
 func logEvent(tx execer, cardID, agent, kind, detail string) error {
-	_, err := tx.Exec(`INSERT INTO card_events (card_id, at, agent, kind, detail) VALUES (?, ?, ?, ?, ?)`, cardID, store.Now(), agent, kind, detail)
+	_, err := tx.Exec(`INSERT INTO card_events (card_id, at, agent, kind, detail, uid) VALUES (?, ?, ?, ?, ?, ?)`, cardID, store.Now(), agent, kind, detail, project.NewID())
+	return err
+}
+
+// tombstone leaves a hard-deleted row's id for the next sync push to delete
+// on the API (GRS-47). Cards and comments are soft-deleted and need none.
+func tombstone(tx execer, tbl, id string) error {
+	_, err := tx.Exec(`INSERT INTO sync_deletes (tbl, id, deleted_at) VALUES (?, ?, ?) ON CONFLICT(tbl, id) DO NOTHING`, tbl, id, store.Now())
 	return err
 }
 

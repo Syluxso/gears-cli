@@ -41,6 +41,26 @@ func Open(p *project.Project) (*sql.DB, error) {
 		db.Close()
 		return nil, err
 	}
+	for col := range added {
+		for _, q := range backfill[col] {
+			if _, err := db.Exec(q); err != nil {
+				db.Close()
+				return nil, err
+			}
+		}
+	}
+	for _, s := range after {
+		if _, err := db.Exec(s); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+	if added["card_events.uid"] {
+		if err := EnsureEventUIDs(db); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	// GRS-40: artifacts carry their project. A standalone project binding
 	// (a clone bound by remote) pushed every artifact under its own id
 	// before the column existed, so its rows take that id; at a workspace
@@ -81,6 +101,53 @@ var columns = []struct{ table, column, def string }{
 	// GRS-40: one cache per workspace holds every project's artifacts; the
 	// project is a tag on the row, empty for workspace-level ones.
 	{"artifacts", "project_id", "TEXT NOT NULL DEFAULT ''"},
+	// GRS-47: cards sync. Children get updated_at for last-write-wins (filled
+	// from created_at when added), cards the label of their last writer, and
+	// activity lines a client-minted UUID v7 (the integer id stays local).
+	{"card_links", "updated_at", "TEXT NOT NULL DEFAULT ''"},
+	{"card_checklists", "updated_at", "TEXT NOT NULL DEFAULT ''"},
+	{"card_checklist_items", "updated_at", "TEXT NOT NULL DEFAULT ''"},
+	{"cards", "updated_by", "TEXT NOT NULL DEFAULT ''"},
+	{"card_events", "uid", "TEXT NOT NULL DEFAULT ''"},
+}
+
+// backfill runs once, right after its column is added: rows from before the
+// column take a value derived from what they already hold.
+var backfill = map[string][]string{
+	"card_links.updated_at":           {`UPDATE card_links SET updated_at = created_at WHERE updated_at = ''`},
+	"card_checklists.updated_at":      {`UPDATE card_checklists SET updated_at = created_at WHERE updated_at = ''`},
+	"card_checklist_items.updated_at": {`UPDATE card_checklist_items SET updated_at = CASE WHEN done_at > created_at THEN done_at ELSE created_at END WHERE updated_at = ''`},
+	"cards.updated_by":                {`UPDATE cards SET updated_by = created_by WHERE updated_by = ''`},
+}
+
+// after the columns: indexes on added columns.
+var after = []string{
+	`CREATE INDEX IF NOT EXISTS idx_card_events_uid ON card_events(uid)`,
+}
+
+// EnsureEventUIDs gives every activity line without one a UUID v7, the id
+// the API knows it by. Lines written since GRS-47 get one at insert.
+func EnsureEventUIDs(db *sql.DB) error {
+	rows, err := db.Query(`SELECT id FROM card_events WHERE uid = ''`)
+	if err != nil {
+		return err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	for _, id := range ids {
+		if _, err := db.Exec(`UPDATE card_events SET uid = ? WHERE id = ?`, project.NewID(), id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // addColumns returns the "table.column" names it added this time.
