@@ -12,15 +12,19 @@ import (
 	"strings"
 	stdsync "sync"
 	"testing"
+	"time"
 
 	"github.com/Syluxso/gears-cli/internal/api"
 	"github.com/Syluxso/gears-cli/internal/artifact"
+	"github.com/Syluxso/gears-cli/internal/gitx"
 	"github.com/Syluxso/gears-cli/internal/project"
+	"github.com/Syluxso/gears-cli/internal/session"
 	"github.com/Syluxso/gears-cli/internal/store"
 )
 
 // fakeAPI answers push and pull like gears-api: a delete for an id it never
-// saw is skipped, pulls return whatever the test queued.
+// saw is skipped, pulls return whatever the test queued, bind finds a
+// project by normalised remote, content is stored by artifact id.
 type fakeAPI struct {
 	mu       stdsync.Mutex
 	pushes   []api.PushIn
@@ -28,6 +32,9 @@ type fakeAPI struct {
 	projects map[string]api.Project
 	projGets int
 	projUps  []api.Project
+	ws       string            // the workspace bind reports
+	content  map[string][]byte // artifact id -> body
+	cursors  []string          // cursor asked for on each pull
 }
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +62,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(out)
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/sync"):
+		f.cursors = append(f.cursors, r.URL.Query().Get("cursor"))
 		out := api.PullOut{Changes: f.pending}
 		if out.Changes == nil {
 			out.Changes = []api.Change{}
@@ -72,6 +80,16 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.projects[pr.ID] = pr
 		_ = json.NewEncoder(w).Encode(pr)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/bind":
+		want := gitx.NormalizeRemote(r.URL.Query().Get("remote"))
+		for _, pr := range f.projects {
+			if gitx.NormalizeRemote(pr.GitRemote) == want {
+				_ = json.NewEncoder(w).Encode(api.BindOut{Project: pr, Workspace: api.Workspace{ID: f.ws, Slug: "ws"}})
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(api.Problem{Status: http.StatusNotFound, Code: "not_found"})
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/projects/"):
 		f.projGets++
 		pr, ok := f.projects[strings.TrimPrefix(r.URL.Path, "/api/v1/projects/")]
@@ -82,7 +100,22 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(pr)
 	case strings.HasSuffix(r.URL.Path, "/content"):
-		w.WriteHeader(http.StatusNotImplemented)
+		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/artifacts/"), "/content")
+		if r.Method == http.MethodPut {
+			b, _ := io.ReadAll(r.Body)
+			if f.content == nil {
+				f.content = map[string][]byte{}
+			}
+			f.content[id] = b
+			_ = json.NewEncoder(w).Encode(map[string]string{"fileId": "f-" + id})
+			return
+		}
+		b, ok := f.content[id]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write(b)
 	default:
 		http.NotFound(w, r)
 	}
@@ -193,294 +226,466 @@ func (f *fakeAPI) queue(ch []api.Change) {
 	f.mu.Unlock()
 }
 
-// GRS-26: the workspace root and a project inside it each have an artifact
-// with the same file name. Each push carries its own binding (projectId for
-// the project, none for the root); each pull keeps only its own, with no
-// UNIQUE failure and neither file touched.
-func TestSyncSameFileTwoBindings(t *testing.T) {
-	dir := t.TempDir()
-	wres, err := project.Init(dir, "ws", "WS")
-	if err != nil {
-		t.Fatal(err)
-	}
-	root := wres.Project
-	root.Workspace = root.ID
-	pres, err := project.Init(filepath.Join(dir, "projects", "alpha"), "alpha", "AL")
-	if err != nil {
-		t.Fatal(err)
-	}
-	alpha := pres.Project
-	alpha.Workspace = root.ID
-	if alpha.IsWorkspace() || !root.IsWorkspace() {
-		t.Fatal("binding roles wrong")
-	}
-
-	rootArt, err := artifact.New(root, "free", "Same name", "tester")
-	if err != nil {
-		t.Fatal(err)
-	}
-	alphaArt, err := artifact.New(alpha, "free", "Same name", "tester")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rootArt.File != alphaArt.File || rootArt.ID == alphaArt.ID {
-		t.Fatalf("setup: %s/%s %s/%s", rootArt.File, rootArt.ID, alphaArt.File, alphaArt.ID)
-	}
-	// Distinct bodies, so an overwrite would show.
-	rootBody, alphaBody := "root body\n", "alpha body\n"
-	if err := os.WriteFile(rootArt.Path, []byte(rootBody), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(alphaArt.Path, []byte(alphaBody), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	for _, b := range []*project.Project{root, alpha} {
-		if _, err := artifact.Reconcile(b); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	f := &fakeAPI{}
-	srv := httptest.NewServer(f)
-	defer srv.Close()
-	cl := api.Anonymous(srv.URL)
-	ctx := context.Background()
-
-	if _, err := Run(ctx, cl, root); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Run(ctx, cl, alpha); err != nil {
-		t.Fatal(err)
-	}
-	all := f.pushedChanges(t)
-	if len(all) != 2 {
-		t.Fatalf("pushed artifact rows: %d", len(all))
-	}
-	for _, ch := range all {
-		var row map[string]any
-		_ = json.Unmarshal(ch.Row, &row)
-		pid, has := row["projectId"]
-		switch ch.ID {
-		case rootArt.ID:
-			if has {
-				t.Fatalf("root artifact pushed with projectId %v", pid)
-			}
-		case alphaArt.ID:
-			if pid != alpha.ID {
-				t.Fatalf("alpha artifact pushed with projectId %v, want %s", pid, alpha.ID)
-			}
-		}
-	}
-
-	// Both caches pull both rows, twice (a repeat sync must stay quiet too).
-	for round := 0; round < 2; round++ {
-		for _, b := range []*project.Project{alpha, root} {
-			f.queue(all)
-			r, err := Run(ctx, cl, b)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(r.Notes) != 0 {
-				t.Fatalf("%s round %d notes: %v", b.Slug, round, r.Notes)
-			}
-			if r.Applied != 1 {
-				t.Fatalf("%s round %d applied %d, want only its own", b.Slug, round, r.Applied)
-			}
-		}
-	}
-	check := func(b *project.Project, wantID, wantBody string) {
-		t.Helper()
-		list, err := artifact.List(b)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(list) != 1 || list[0].ID != wantID {
-			t.Fatalf("%s cache: %+v", b.Slug, list)
-		}
-		got, err := os.ReadFile(list[0].Path)
-		if err != nil || string(got) != wantBody {
-			t.Fatalf("%s file: %q %v", b.Slug, got, err)
-		}
-	}
-	check(root, rootArt.ID, rootBody)
-	check(alpha, alphaArt.ID, alphaBody)
+func (f *fakeAPI) counts() (gets int, ups []api.Project) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.projGets, append([]api.Project{}, f.projUps...)
 }
 
-// A cache from before GRS-26 that took a workspace-level row in drops it on
-// the next pull of that row (the server keeps it), so it is never pushed back
-// under the project's id. A cached copy whose body differs from the server's
-// (the root edited it since) keeps its file and is re-adopted as the
-// project's own.
-func TestSyncEvictsForeignArtifact(t *testing.T) {
-	dir := t.TempDir()
-	wres, err := project.Init(dir, "ws", "WS")
-	if err != nil {
+func gitInit(t *testing.T, dir, remote string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	root := wres.Project
-	root.Workspace = root.ID
-	pres, err := project.Init(filepath.Join(dir, "projects", "alpha"), "alpha", "AL")
-	if err != nil {
-		t.Fatal(err)
+	args := [][]string{{"init", "-q"}}
+	if remote != "" {
+		args = append(args, []string{"remote", "add", "origin", remote})
 	}
-	alpha := pres.Project
-	alpha.Workspace = root.ID
-
-	clean, err := artifact.New(root, "free", "Clean copy", "tester")
-	if err != nil {
-		t.Fatal(err)
-	}
-	edited, err := artifact.New(root, "idea", "Edited copy", "tester")
-	if err != nil {
-		t.Fatal(err)
-	}
-	f := &fakeAPI{}
-	srv := httptest.NewServer(f)
-	defer srv.Close()
-	cl := api.Anonymous(srv.URL)
-	ctx := context.Background()
-	if _, err := Run(ctx, cl, root); err != nil {
-		t.Fatal(err)
-	}
-	ws := f.pushedChanges(t)
-
-	// Seed alpha the way the old rule did: rows and files copied in.
-	db, err := store.Open(alpha)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(alpha.ArtifactsDir(), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, a := range []*artifact.Artifact{clean, edited} {
-		body, _ := os.ReadFile(a.Path)
-		if a.ID == edited.ID {
-			body = append(body, []byte("\nolder cached copy\n")...)
+	for _, a := range args {
+		c := exec.Command("git", a...)
+		c.Dir = dir
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", a, err, out)
 		}
-		// The cache's row agrees with its file, so Reconcile leaves it be.
-		localHash := artifact.Hash(string(body))
-		if err := os.WriteFile(filepath.Join(alpha.ArtifactsDir(), a.File), body, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.Exec(`INSERT INTO artifacts (id, prefix, slug, file, title, status, created_at, created_by, updated_at, body_hash, file_present, shape_ok, shape_errors)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, '')`, a.ID, a.Prefix, a.Slug, a.File, a.Title, a.Status,
-			"2020-01-01T00:00:00Z", "tester", "2020-01-01T00:00:00Z", localHash); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// It had synced before: the pulled rows are not new local changes.
-	if err := setState(db, "pushed_at", store.Now()); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-
-	f.queue(ws)
-	r, err := Run(ctx, cl, alpha)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r.Applied != 0 || len(r.Notes) != 1 || !strings.Contains(r.Notes[0], edited.File) {
-		t.Fatalf("applied %d notes %v", r.Applied, r.Notes)
-	}
-	if _, err := os.Stat(filepath.Join(alpha.ArtifactsDir(), clean.File)); !os.IsNotExist(err) {
-		t.Fatalf("clean foreign copy left: %v", err)
-	}
-	if _, err := artifact.Reconcile(alpha); err != nil {
-		t.Fatal(err)
-	}
-	list, err := artifact.List(alpha)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(list) != 1 || list[0].File != edited.File || list[0].ID == edited.ID {
-		t.Fatalf("alpha after evict: %+v", list)
-	}
-	// The root still has both, untouched.
-	if rl, _ := artifact.List(root); len(rl) != 2 {
-		t.Fatalf("root list: %+v", rl)
 	}
 }
 
-// GRS-27: every sync in a bound project makes sure its project row exists in
-// the account and carries the current git remote; the workspace root never
-// creates a project row, and a re-run writes nothing.
-func TestSyncEnsuresProject(t *testing.T) {
+func artifactRow(t *testing.T, id, prefix, slug, projectID, body string) api.Change {
+	t.Helper()
+	row := map[string]any{"id": id, "prefix": prefix, "slug": slug, "title": slug, "status": "draft", "tags": []string{},
+		"bodyHash": artifact.Hash(body), "shapeOk": true, "fileId": "f-" + id,
+		"createdAt": "2026-10-12T10:00:00Z", "updatedAt": "2026-10-12T10:00:00Z", "createdBy": "elsewhere"}
+	if projectID != "" {
+		row["projectId"] = projectID
+	}
+	b, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return api.Change{Seq: 1, Table: "artifacts", ID: id, Op: "upsert", Row: b}
+}
+
+// GRS-40: the workspace root's sync makes sure every non-missing manifest
+// project exists in the account: one GET each, create when absent, refresh
+// a moved remote, adopt the API's id for a remote scanned offline (retagging
+// the cache's rows before they are pushed), skip missing entries, and never
+// make the workspace itself a project. A re-run writes nothing.
+func TestSyncEnsuresManifestProjects(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
 	dir := t.TempDir()
-	wres, err := project.Init(dir, "ws", "WS")
+	res, err := project.Init(dir, "ws", "WS")
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := wres.Project
+	root := res.Project
 	root.Workspace = root.ID
-	adir := filepath.Join(dir, "projects", "alpha")
-	pres, err := project.Init(adir, "alpha", "AL")
-	if err != nil {
+	gitInit(t, filepath.Join(dir, "projects", "alpha"), "git@github.com:example/alpha.git")
+	gitInit(t, filepath.Join(dir, "projects", "beta"), "") // no remote, no commits
+	gitInit(t, filepath.Join(dir, "projects", "late"), "https://github.com/example/late.git")
+	const alphaID = "01a12688-563c-7dda-a360-db460f196103"
+	const lateAPI = "01a133a5-57f7-7c78-827b-ac2716ee35ba"
+	m := &project.Manifest{Projects: []project.ManifestEntry{
+		{ID: alphaID, Slug: "alpha", Path: "projects/alpha", Remote: "git@github.com:example/alpha.git"},
+		{ID: "01a1bbbb-0000-7000-8000-00000000beta", Slug: "beta", Path: "projects/beta"},
+		{ID: "01a1cccc-0000-7000-8000-0000minted00", Slug: "late", Path: "projects/late", Remote: "https://github.com/example/late.git"},
+		{ID: "01a1dddd-0000-7000-8000-000000000gone", Slug: "gone", Path: "projects/gone", Missing: true},
+	}}
+	if err := m.Save(root); err != nil {
 		t.Fatal(err)
 	}
-	alpha := pres.Project
-	alpha.Workspace = root.ID // bound already, so Run skips Reconcile
-	git := func(args ...string) {
-		t.Helper()
-		c := exec.Command("git", args...)
-		c.Dir = adir
-		if out, err := c.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v %s", args, err, out)
-		}
+	// Work logged against the minted id before the first sync.
+	lateDir := filepath.Join(dir, "projects", "late")
+	if _, err := session.AppendFor(root, project.Current(root, lateDir).ID, "done", "tester", "late work"); err != nil {
+		t.Fatal(err)
 	}
-	git("init", "-q")
-	git("remote", "add", "origin", "git@github.com:example/alpha.git")
 
-	f := &fakeAPI{}
+	f := &fakeAPI{projects: map[string]api.Project{
+		alphaID: {ID: alphaID, WorkspaceID: root.ID, Slug: "alpha", GitRemote: "github.com/example/alpha"},
+		lateAPI: {ID: lateAPI, WorkspaceID: root.ID, Slug: "late", GitRemote: "github.com/example/late"},
+	}, ws: root.ID}
 	srv := httptest.NewServer(f)
 	defer srv.Close()
 	cl := api.Anonymous(srv.URL)
 	ctx := context.Background()
 
+	r, err := Run(ctx, cl, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gets, ups := f.counts()
+	// One GET each: alpha, beta, late (missed by id, found by remote).
+	if r.Projects != 3 || r.ProjectsCreated != 1 || gets != 3 {
+		t.Fatalf("checked %d created %d gets %d notes %v", r.Projects, r.ProjectsCreated, gets, r.Notes)
+	}
+	if len(ups) != 1 || ups[0].ID != "01a1bbbb-0000-7000-8000-00000000beta" || ups[0].WorkspaceID != root.ID || ups[0].Slug != "beta" || ups[0].GitRemote != "" {
+		t.Fatalf("upserts: %+v", ups)
+	}
+	for _, u := range ups {
+		if u.ID == root.ID {
+			t.Fatal("workspace upserted as a project")
+		}
+	}
+	m, _ = project.LoadManifest(root)
+	if e := m.Lookup("late"); e == nil || e.ID != lateAPI {
+		t.Fatalf("late not adopted: %+v", m.Projects)
+	}
+	if e := m.Lookup("gone"); e == nil || !e.Missing {
+		t.Fatalf("missing entry dropped or revived: %+v", m.Projects)
+	}
+	// The entry logged under the minted id went up under the API's id.
+	f.mu.Lock()
+	pushed := f.pushes[0].Rows["session_entries"]
+	f.mu.Unlock()
+	if len(pushed) != 1 || pushed[0].(map[string]any)["projectId"] != lateAPI {
+		t.Fatalf("pushed session entries: %v", pushed)
+	}
+
+	// Re-run: one GET each, nothing written.
 	if _, err := Run(ctx, cl, root); err != nil {
 		t.Fatal(err)
 	}
-	if f.projGets != 0 || len(f.projUps) != 0 {
-		t.Fatalf("workspace root touched projects: gets %d ups %v", f.projGets, f.projUps)
+	gets2, ups2 := f.counts()
+	if gets2-gets != 3 || len(ups2) != 1 {
+		t.Fatalf("re-run: gets %d upserts %+v", gets2-gets, ups2)
 	}
 
-	if _, err := Run(ctx, cl, alpha); err != nil {
-		t.Fatal(err)
-	}
-	if len(f.projUps) != 1 {
-		t.Fatalf("first sync upserts: %v", f.projUps)
-	}
-	up := f.projUps[0]
-	if up.ID != alpha.ID || up.WorkspaceID != root.ID || up.Slug != "alpha" || up.GitRemote != "git@github.com:example/alpha.git" {
-		t.Fatalf("created: %+v", up)
-	}
-
-	// The API normalises the remote and someone renamed the project there:
-	// a re-run sees the same remote and writes nothing.
+	// alpha's remote moved: refreshed, keeping the API's slug and name.
 	f.mu.Lock()
-	f.projects[alpha.ID] = api.Project{ID: alpha.ID, WorkspaceID: root.ID, Slug: "alpha-renamed", Name: "Alpha", GitRemote: "github.com/example/alpha"}
+	f.projects[alphaID] = api.Project{ID: alphaID, WorkspaceID: root.ID, Slug: "alpha-renamed", Name: "Alpha", GitRemote: "github.com/example/alpha"}
 	f.mu.Unlock()
-	if _, err := Run(ctx, cl, alpha); err != nil {
+	c := exec.Command("git", "remote", "set-url", "origin", "https://github.com/example/alpha-moved.git")
+	c.Dir = filepath.Join(dir, "projects", "alpha")
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	if _, err := Run(ctx, cl, root); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.projUps) != 1 {
-		t.Fatalf("re-run upserted: %v", f.projUps[1:])
+	_, ups3 := f.counts()
+	if len(ups3) != 2 {
+		t.Fatalf("remote refresh upserts: %+v", ups3)
 	}
-
-	// The remote moved: refreshed, keeping the API's slug and name.
-	git("remote", "set-url", "origin", "https://github.com/example/alpha-moved.git")
-	if _, err := Run(ctx, cl, alpha); err != nil {
-		t.Fatal(err)
-	}
-	if len(f.projUps) != 2 {
-		t.Fatalf("remote refresh upserts: %v", f.projUps)
-	}
-	if up := f.projUps[1]; up.GitRemote != "https://github.com/example/alpha-moved.git" || up.Slug != "alpha-renamed" || up.Name != "Alpha" || up.ID != alpha.ID {
+	if up := ups3[1]; up.ID != alphaID || up.GitRemote != "https://github.com/example/alpha-moved.git" || up.Slug != "alpha-renamed" || up.Name != "Alpha" {
 		t.Fatalf("refreshed: %+v", up)
 	}
-	if f.projGets != 3 {
-		t.Fatalf("project gets: %d", f.projGets)
+	m, _ = project.LoadManifest(root)
+	if e := m.Lookup("alpha"); e.Remote != "https://github.com/example/alpha-moved.git" {
+		t.Fatalf("manifest remote not refreshed: %+v", e)
+	}
+}
+
+// GRS-40: the root's one cache holds every artifact of the workspace,
+// tagged with its project. Pushes carry each row's own projectId. A row from
+// elsewhere whose file name is taken here is cached under a suffixed name,
+// keeps its server slug, and neither file is touched; repeat pulls are quiet.
+func TestSyncWorkspaceCacheHoldsAllArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	res, err := project.Init(dir, "ws", "WS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := res.Project
+	root.Workspace = root.ID
+	const alphaID = "01a12688-563c-7dda-a360-db460f196103"
+	m := &project.Manifest{Projects: []project.ManifestEntry{{ID: alphaID, Slug: "alpha", Path: "projects/alpha"}}}
+	if err := m.Save(root); err != nil {
+		t.Fatal(err)
+	}
+	wsArt, err := artifact.New(root, "free", "Same name", "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	alphaArt, err := artifact.NewFor(root, alphaID, "idea", "Alpha idea", "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootBody := "root body\n"
+	if err := os.WriteFile(wsArt.Path, []byte(rootBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &fakeAPI{projects: map[string]api.Project{alphaID: {ID: alphaID, WorkspaceID: root.ID, Slug: "alpha"}}, ws: root.ID}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	cl := api.Anonymous(srv.URL)
+	ctx := context.Background()
+	if _, err := Run(ctx, cl, root); err != nil {
+		t.Fatal(err)
+	}
+	for _, ch := range f.pushedChanges(t) {
+		var row map[string]any
+		_ = json.Unmarshal(ch.Row, &row)
+		pid, has := row["projectId"]
+		switch ch.ID {
+		case wsArt.ID:
+			if has {
+				t.Fatalf("workspace artifact pushed with projectId %v", pid)
+			}
+		case alphaArt.ID:
+			if pid != alphaID {
+				t.Fatalf("alpha artifact pushed with projectId %v", pid)
+			}
+		}
+	}
+
+	// alpha's own free--same-name.md, made in a pre-GRS-40 project binding.
+	const otherID = "01a130c3-0000-7000-8000-0000173b938f"
+	alphaBody := "alpha body\n"
+	f.mu.Lock()
+	f.content = map[string][]byte{otherID: []byte(alphaBody)}
+	f.mu.Unlock()
+	pulled := artifactRow(t, otherID, "free", "same-name", alphaID, alphaBody)
+	for round := 0; round < 2; round++ {
+		f.queue([]api.Change{pulled})
+		r, err := Run(ctx, cl, root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.Applied != 1 || r.Failed != 0 {
+			t.Fatalf("round %d: applied %d failed %d notes %v", round, r.Applied, r.Failed, r.Notes)
+		}
+		wantNotes := 0
+		if round == 0 {
+			wantNotes = 1
+		}
+		if len(r.Notes) != wantNotes || (wantNotes == 1 && !strings.Contains(r.Notes[0], "free--same-name--alpha.md")) {
+			t.Fatalf("round %d notes: %v", round, r.Notes)
+		}
+	}
+	list, err := artifact.List(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byFile := map[string]artifact.Artifact{}
+	for _, a := range list {
+		byFile[a.File] = a
+	}
+	if len(list) != 3 {
+		t.Fatalf("cache: %+v", list)
+	}
+	if a := byFile["free--same-name.md"]; a.ID != wsArt.ID || a.ProjectID != "" {
+		t.Fatalf("workspace artifact: %+v", a)
+	}
+	if a := byFile["free--same-name--alpha.md"]; a.ID != otherID || a.ProjectID != alphaID || a.Slug != "same-name" {
+		t.Fatalf("alpha's copy: %+v", a)
+	}
+	if got, _ := os.ReadFile(wsArt.Path); string(got) != rootBody {
+		t.Fatalf("workspace file changed: %q", got)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root.ArtifactsDir(), "free--same-name--alpha.md")); string(got) != alphaBody {
+		t.Fatalf("alpha file: %q", got)
+	}
+
+	// Edit alpha's copy here: it goes up under its server slug and project.
+	if err := os.WriteFile(filepath.Join(root.ArtifactsDir(), "free--same-name--alpha.md"), []byte(alphaBody+"more\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond) // updated_at is to the second
+	f.mu.Lock()
+	f.pushes = nil
+	f.mu.Unlock()
+	if _, err := Run(ctx, cl, root); err != nil {
+		t.Fatal(err)
+	}
+	var up map[string]any
+	for _, ch := range f.pushedChanges(t) {
+		if ch.ID == otherID {
+			_ = json.Unmarshal(ch.Row, &up)
+		}
+	}
+	if up == nil || up["slug"] != "same-name" || up["projectId"] != alphaID {
+		t.Fatalf("pushed edit: %v", up)
+	}
+}
+
+// GRS-40: a cache whose cursor ran under the GRS-26 rule (skipping other
+// bindings' artifacts) pulls the workspace from the start once, then
+// carries on from the server's cursor.
+func TestSyncRepullsOnce(t *testing.T) {
+	res, err := project.Init(t.TempDir(), "ws", "WS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := res.Project
+	p.Workspace = p.ID
+	db, err := store.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := setState(db, "cursor", "86"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	f := &fakeAPI{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	cl := api.Anonymous(srv.URL)
+	for i := 0; i < 2; i++ {
+		if _, err := Run(context.Background(), cl, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.cursors) != 2 || f.cursors[0] != "0" || f.cursors[1] == "86" {
+		t.Fatalf("pull cursors: %v", f.cursors)
+	}
+}
+
+// A standalone clone (bound by remote, no workspace above it) still works:
+// it makes sure of its own project row, its artifacts carry its id, and a
+// workspace-level artifact pulled into it is not re-homed when edited.
+func TestSyncStandaloneClone(t *testing.T) {
+	res, err := project.Init(t.TempDir(), "alpha", "AL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := res.Project
+	p.Workspace = "01a12688-57c3-7a3c-9fe1-0698ffeb676b" // bound by remote
+	if p.IsWorkspace() {
+		t.Fatal("standalone clone reads as a workspace")
+	}
+	own, err := artifact.New(p, "free", "Clone note", "tester")
+	if err != nil || own.ProjectID != p.ID {
+		t.Fatalf("own artifact: %+v %v", own, err)
+	}
+	f := &fakeAPI{ws: p.Workspace}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	cl := api.Anonymous(srv.URL)
+	ctx := context.Background()
+	f.queue([]api.Change{artifactRow(t, "01a130c3-eaa4-745f-8f12-30b017b2aa10", "runbook", "single-ticket-development", "", "steps: []\n")})
+	f.content = map[string][]byte{"01a130c3-eaa4-745f-8f12-30b017b2aa10": []byte("steps: []\n")}
+	if _, err := Run(ctx, cl, p); err != nil {
+		t.Fatal(err)
+	}
+	_, ups := f.counts()
+	if len(ups) != 1 || ups[0].ID != p.ID || ups[0].WorkspaceID != p.Workspace {
+		t.Fatalf("project upserts: %+v", ups)
+	}
+	var pid any = "unset"
+	for _, ch := range f.pushedChanges(t) {
+		if ch.ID == own.ID {
+			var row map[string]any
+			_ = json.Unmarshal(ch.Row, &row)
+			pid = row["projectId"]
+		}
+	}
+	if pid != p.ID {
+		t.Fatalf("clone artifact pushed with projectId %v", pid)
+	}
+	ws, err := artifact.Find(p, "runbook--single-ticket-development.yaml")
+	if err != nil || ws.ProjectID != "" {
+		t.Fatalf("workspace runbook in clone: %+v %v", ws, err)
+	}
+	if err := os.WriteFile(ws.Path, []byte("steps: [] # edited\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	f.mu.Lock()
+	f.pushes = nil
+	f.mu.Unlock()
+	if _, err := Run(ctx, cl, p); err != nil {
+		t.Fatal(err)
+	}
+	for _, ch := range f.pushedChanges(t) {
+		if ch.ID == ws.ID {
+			var row map[string]any
+			_ = json.Unmarshal(ch.Row, &row)
+			if _, has := row["projectId"]; has {
+				t.Fatalf("workspace runbook re-homed: %v", row)
+			}
+			return
+		}
+	}
+	t.Fatal("edited runbook not pushed")
+}
+
+// Rows written in the same second as the last push (timestamps are to the
+// second) still go up on the next sync. With one cache per workspace, a
+// write right after any sync from anywhere in the workspace hits this.
+func TestSyncPushesRowsFromTheLastPushSecond(t *testing.T) {
+	res, err := project.Init(t.TempDir(), "ws", "WS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := res.Project
+	p.Workspace = p.ID
+	f := &fakeAPI{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	cl := api.Anonymous(srv.URL)
+	for {
+		// Start early in a second so the writes below share the push's stamp.
+		if time.Now().Nanosecond() < 500e6 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, err := Run(context.Background(), cl, p); err != nil {
+		t.Fatal(err)
+	}
+	a, err := artifact.New(p, "free", "Right after", "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := session.Append(p, "done", "tester", "right after")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), cl, p); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	f.mu.Lock()
+	for _, in := range f.pushes {
+		for _, tbl := range []string{"artifacts", "session_entries"} {
+			for _, row := range in.Rows[tbl] {
+				got[row.(map[string]any)["id"].(string)] = true
+			}
+		}
+	}
+	f.mu.Unlock()
+	if !got[a.ID] || !got[e.ID] {
+		t.Fatalf("rows from the last push's second not pushed: artifact %v entry %v", got[a.ID], got[e.ID])
+	}
+}
+
+// A pulled artifact whose body cannot be fetched (no file store, nothing
+// uploaded) gets a seeded stub in the cache, and the stub is never pushed
+// back over the server's row. Before GRS-40 a cache rarely pulled rows it
+// did not make; now the root pulls every project's.
+func TestSyncDoesNotPushStubForBodylessRow(t *testing.T) {
+	res, err := project.Init(t.TempDir(), "ws", "WS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := res.Project
+	p.Workspace = p.ID
+	f := &fakeAPI{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	cl := api.Anonymous(srv.URL)
+	const id = "01a130c3-0000-7000-8000-0000173b938f"
+	f.queue([]api.Change{artifactRow(t, id, "runbook", "single-ticket-development", "01a12688-563c-7dda-a360-db460f196103", "steps: [real]\n")})
+	if _, err := Run(context.Background(), cl, p); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	for i := 0; i < 2; i++ {
+		if _, err := Run(context.Background(), cl, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, ch := range f.pushedChanges(t) {
+		if ch.ID == id {
+			t.Fatalf("stub pushed back: %s", ch.Row)
+		}
+	}
+	a, err := artifact.Find(p, id)
+	if err != nil || !a.FilePresent {
+		t.Fatalf("cached row: %+v %v", a, err)
 	}
 }

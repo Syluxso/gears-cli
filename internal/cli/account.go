@@ -98,6 +98,12 @@ per call and is not a gate.`,
 			}
 			fmt.Printf("project %s (%s) %s\n", out.Project.Slug, short(out.Project.ID), verb)
 		}
+		if out.Projects > 0 {
+			fmt.Printf("%d project%s from .gears/projects.yaml checked, %d created\n", out.Projects, plural(out.Projects, "", "s"), out.ProjectsCreated)
+		}
+		for _, n := range out.Notes {
+			fmt.Println("  note:", n)
+		}
 		if out.Pending > 0 {
 			fmt.Printf("%d change%s to pull: gears sync\n", out.Pending, plural(out.Pending, "", "s"))
 		} else {
@@ -147,6 +153,9 @@ var syncCmd = &cobra.Command{
 		}
 		fmt.Printf("%s  workspace %s\npushed %d (skipped %d, failed %d)  pulled %d, applied %d  cursor %d\n",
 			out.Host, short(out.Workspace), out.Pushed, out.Skipped, out.Failed, out.Pulled, out.Applied, out.Cursor)
+		if out.Projects > 0 {
+			fmt.Printf("projects: %d checked, %d created\n", out.Projects, out.ProjectsCreated)
+		}
 		if out.ContentUp > 0 || out.ContentDown > 0 {
 			fmt.Printf("artifact content: %d up, %d down\n", out.ContentUp, out.ContentDown)
 		}
