@@ -36,7 +36,7 @@ func printDeskItems(items []verbs.DeskItem) {
 		if it.State == "closed" {
 			state = "  [closed]"
 		}
-		fmt.Printf("%s  %-8s %s → %s%s\n", short(it.ID), it.Type, it.From, orAnyone(it.To), state)
+		fmt.Printf("%s  %-8s %s → %s%s\n", tail(it.ID), it.Type, it.From, orAnyone(it.To), state)
 		fmt.Printf("          %s\n", it.Text)
 		if it.Ref != "" {
 			fmt.Printf("          ref %s\n", it.Ref)

@@ -116,7 +116,7 @@ func printStatusBrief(w io.Writer, out *verbs.StatusOut, width int, colour bool)
 	head("desk", fmt.Sprintf("%d open", len(out.Desk)))
 	for i := len(out.Desk) - 1; i >= 0 && i >= len(out.Desk)-statusShown; i-- {
 		it := out.Desk[i]
-		item(short(it.ID), fmt.Sprintf("%-8s %s → %s  %s", it.Type, it.From, orAnyone(it.To), it.Text))
+		item(tail(it.ID), fmt.Sprintf("%-8s %s → %s  %s", it.Type, it.From, orAnyone(it.To), it.Text))
 	}
 	more(len(out.Desk)-statusShown, "", "gears desk list")
 
@@ -205,7 +205,7 @@ func printStatusFull(out *verbs.StatusOut) {
 
 	fmt.Printf("\ndesk      %d open item%s\n", len(out.Desk), plural(len(out.Desk), "", "s"))
 	for _, it := range out.Desk {
-		fmt.Printf("  %s  %-8s %s → %s  %s\n", short(it.ID), it.Type, it.From, orAnyone(it.To), it.Text)
+		fmt.Printf("  %s  %-8s %s → %s  %s\n", tail(it.ID), it.Type, it.From, orAnyone(it.To), it.Text)
 	}
 
 	if out.Cards.Open > 0 {

@@ -40,8 +40,9 @@ type Item struct {
 	Answer    string
 }
 
-// Short is the id prefix shown in listings.
-func (i Item) Short() string { return i.ID[:8] }
+// Short is the id shown in listings: the last eight digits. A v7 id's
+// leading digits are its timestamp, so items sent together share a prefix.
+func (i Item) Short() string { return i.ID[len(i.ID)-8:] }
 
 func validType(t string) bool {
 	for _, x := range Types {
@@ -135,15 +136,20 @@ func List(p *project.Project, f Filter) ([]Item, error) {
 	return out, rows.Err()
 }
 
-// Get finds an item by full id or unique prefix.
+// Get finds an item by full id or a unique prefix or suffix (listings show
+// the last eight digits).
 func Get(p *project.Project, key string) (*Item, error) {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
+		return nil, fmt.Errorf("no desk item id given")
+	}
 	all, err := List(p, Filter{All: true})
 	if err != nil {
 		return nil, err
 	}
 	var hit *Item
 	for i := range all {
-		if all[i].ID == key || strings.HasPrefix(all[i].ID, key) {
+		if all[i].ID == key || strings.HasPrefix(all[i].ID, key) || strings.HasSuffix(all[i].ID, key) {
 			if hit != nil {
 				return nil, fmt.Errorf("id %q is ambiguous", key)
 			}

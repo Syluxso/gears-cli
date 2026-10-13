@@ -16,7 +16,7 @@ func bigStatus() *verbs.StatusOut {
 		Artifacts: verbs.ArtifactStats{Total: 5, ByPrefix: map[string]int{"free": 5}},
 		Runs:      []verbs.RunSummary{}, NextAction: "work the desk: 16 open item(s)"}
 	for i := 0; i < 16; i++ {
-		out.Desk = append(out.Desk, verbs.DeskItem{ID: fmt.Sprintf("d%07d-x", i), Type: "handoff", From: "a", Text: fmt.Sprintf("item %d ", i) + strings.Repeat("é", 200)})
+		out.Desk = append(out.Desk, verbs.DeskItem{ID: fmt.Sprintf("x-d%07d", i), Type: "handoff", From: "a", Text: fmt.Sprintf("item %d ", i) + strings.Repeat("é", 200)})
 	}
 	for i := 0; i < 4; i++ {
 		out.Cards.Mine = append(out.Cards.Mine, verbs.CardLine{Key: fmt.Sprintf("GRS-%d", i), Type: "story", State: "In Progress", Priority: "P2", Title: "mine"})
