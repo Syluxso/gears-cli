@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	stdsync "sync"
@@ -21,9 +22,12 @@ import (
 // fakeAPI answers push and pull like gears-api: a delete for an id it never
 // saw is skipped, pulls return whatever the test queued.
 type fakeAPI struct {
-	mu      stdsync.Mutex
-	pushes  []api.PushIn
-	pending []api.Change
+	mu       stdsync.Mutex
+	pushes   []api.PushIn
+	pending  []api.Change
+	projects map[string]api.Project
+	projGets int
+	projUps  []api.Project
 }
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -58,6 +62,25 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		out.Cursor = int64(len(f.pending))
 		f.pending = nil
 		_ = json.NewEncoder(w).Encode(out)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects":
+		var pr api.Project
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &pr)
+		f.projUps = append(f.projUps, pr)
+		if f.projects == nil {
+			f.projects = map[string]api.Project{}
+		}
+		f.projects[pr.ID] = pr
+		_ = json.NewEncoder(w).Encode(pr)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/projects/"):
+		f.projGets++
+		pr, ok := f.projects[strings.TrimPrefix(r.URL.Path, "/api/v1/projects/")]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(api.Problem{Status: http.StatusNotFound, Code: "not_found"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(pr)
 	case strings.HasSuffix(r.URL.Path, "/content"):
 		w.WriteHeader(http.StatusNotImplemented)
 	default:
@@ -375,5 +398,89 @@ func TestSyncEvictsForeignArtifact(t *testing.T) {
 	// The root still has both, untouched.
 	if rl, _ := artifact.List(root); len(rl) != 2 {
 		t.Fatalf("root list: %+v", rl)
+	}
+}
+
+// GRS-27: every sync in a bound project makes sure its project row exists in
+// the account and carries the current git remote; the workspace root never
+// creates a project row, and a re-run writes nothing.
+func TestSyncEnsuresProject(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	wres, err := project.Init(dir, "ws", "WS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := wres.Project
+	root.Workspace = root.ID
+	adir := filepath.Join(dir, "projects", "alpha")
+	pres, err := project.Init(adir, "alpha", "AL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	alpha := pres.Project
+	alpha.Workspace = root.ID // bound already, so Run skips Reconcile
+	git := func(args ...string) {
+		t.Helper()
+		c := exec.Command("git", args...)
+		c.Dir = adir
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	git("remote", "add", "origin", "git@github.com:example/alpha.git")
+
+	f := &fakeAPI{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	cl := api.Anonymous(srv.URL)
+	ctx := context.Background()
+
+	if _, err := Run(ctx, cl, root); err != nil {
+		t.Fatal(err)
+	}
+	if f.projGets != 0 || len(f.projUps) != 0 {
+		t.Fatalf("workspace root touched projects: gets %d ups %v", f.projGets, f.projUps)
+	}
+
+	if _, err := Run(ctx, cl, alpha); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.projUps) != 1 {
+		t.Fatalf("first sync upserts: %v", f.projUps)
+	}
+	up := f.projUps[0]
+	if up.ID != alpha.ID || up.WorkspaceID != root.ID || up.Slug != "alpha" || up.GitRemote != "git@github.com:example/alpha.git" {
+		t.Fatalf("created: %+v", up)
+	}
+
+	// The API normalises the remote and someone renamed the project there:
+	// a re-run sees the same remote and writes nothing.
+	f.mu.Lock()
+	f.projects[alpha.ID] = api.Project{ID: alpha.ID, WorkspaceID: root.ID, Slug: "alpha-renamed", Name: "Alpha", GitRemote: "github.com/example/alpha"}
+	f.mu.Unlock()
+	if _, err := Run(ctx, cl, alpha); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.projUps) != 1 {
+		t.Fatalf("re-run upserted: %v", f.projUps[1:])
+	}
+
+	// The remote moved: refreshed, keeping the API's slug and name.
+	git("remote", "set-url", "origin", "https://github.com/example/alpha-moved.git")
+	if _, err := Run(ctx, cl, alpha); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.projUps) != 2 {
+		t.Fatalf("remote refresh upserts: %v", f.projUps)
+	}
+	if up := f.projUps[1]; up.GitRemote != "https://github.com/example/alpha-moved.git" || up.Slug != "alpha-renamed" || up.Name != "Alpha" || up.ID != alpha.ID {
+		t.Fatalf("refreshed: %+v", up)
+	}
+	if f.projGets != 3 {
+		t.Fatalf("project gets: %d", f.projGets)
 	}
 }

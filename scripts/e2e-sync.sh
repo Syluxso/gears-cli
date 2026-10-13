@@ -101,6 +101,24 @@ CLONE_SAME=$(cd "$C" && "$G" artifact list --json | python -c "import json,sys; 
 curl -s -H "Authorization: Bearer $TOKEN" "$GEARS_API/api/v1/artifacts/$ALPHA_SAME" | python -c "import json,sys; a=json.load(sys.stdin); a=a.get('artifact',a); assert a.get('projectId')=='$ALPHA_ID', a; print('ok: alpha artifact carries projectId')"
 curl -s -H "Authorization: Bearer $TOKEN" "$GEARS_API/api/v1/artifacts/$ROOT_SAME" | python -c "import json,sys; a=json.load(sys.stdin); a=a.get('artifact',a); assert not a.get('projectId'), a; print('ok: root artifact has no projectId')"
 
+echo "== GRS-27: a project bound offline (workspace already in project.yaml) is created on plain sync"
+B="$WORK/ws/projects/beta"; mkdir -p "$B"
+WS_ID=$(grep '^id:' "$WORK/ws/.gears/project.yaml" | awk '{print $2}')
+( cd "$B" && git init -q -b main . && git remote add origin git@github.com:example/beta.git && "$G" init >/dev/null )
+grep -q '^workspace:' "$B/.gears/project.yaml" || echo "workspace: $WS_ID" >> "$B/.gears/project.yaml"
+BETA_ID=$(grep '^id:' "$B/.gears/project.yaml" | awk '{print $2}')
+projects() { curl -s -H "Authorization: Bearer $TOKEN" "$GEARS_API/api/v1/projects?workspaceId=$WS_ID"; }
+projects | python -c "import json,sys; d=json.load(sys.stdin); d=d.get('projects',d) if isinstance(d,dict) else d; assert '$BETA_ID' not in [p['id'] for p in d], d"
+( cd "$B" && "$G" sync >/dev/null )
+BETA1=$(projects | python -c "import json,sys; d=json.load(sys.stdin); d=d.get('projects',d) if isinstance(d,dict) else d; b=[p for p in d if p['id']=='$BETA_ID']; assert len(b)==1 and b[0]['gitRemote']=='github.com/example/beta', d; assert '$WS_ID' not in [p['id'] for p in d], 'root became a project'; print(b[0]['updatedAt'])")
+( cd "$B" && "$G" sync >/dev/null && "$G" sync >/dev/null )
+BETA2=$(projects | python -c "import json,sys; d=json.load(sys.stdin); d=d.get('projects',d) if isinstance(d,dict) else d; b=[p for p in d if p['id']=='$BETA_ID']; assert len(b)==1, d; print(b[0]['updatedAt'])")
+[ "$BETA1" = "$BETA2" ] || { echo "re-sync rewrote the project ($BETA1 -> $BETA2)"; exit 1; }
+( cd "$B" && git remote set-url origin https://github.com/example/beta-moved.git && "$G" sync >/dev/null )
+projects | python -c "import json,sys; d=json.load(sys.stdin); d=d.get('projects',d) if isinstance(d,dict) else d; b=[p for p in d if p['id']=='$BETA_ID']; assert len(b)==1 and b[0]['gitRemote']=='github.com/example/beta-moved', d; print('ok: beta created once, idempotent, remote refreshed')"
+( cd "$WORK/ws" && "$G" sync >/dev/null )
+projects | python -c "import json,sys; d=json.load(sys.stdin); d=d.get('projects',d) if isinstance(d,dict) else d; assert '$WS_ID' not in [p['id'] for p in d], d; print('ok: workspace root is not a project row')"
+
 echo "== second sync is a no-op"
 ( cd "$WORK/ws/projects/alpha" && "$G" sync --json | python -c "import json,sys; r=json.load(sys.stdin); assert r['pushed']==0 and r['failed']==0, r; print('ok: pushed', r['pushed'], 'pulled', r['pulled'])" )
 

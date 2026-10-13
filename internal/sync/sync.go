@@ -91,21 +91,11 @@ func Reconcile(ctx context.Context, c *api.Client, p *project.Project) (*Reconci
 
 	// Project: same, when this binding is a project inside the workspace.
 	if ws != p.ID {
-		pr, err := c.GetProject(ctx, p.ID)
+		pr, created, err := ensureProject(ctx, c, p, ws)
 		if err != nil {
-			return nil, fmt.Errorf("project: %w", err)
+			return nil, err
 		}
-		remote := gitx.RemoteURL(p.Root)
-		if pr == nil {
-			pr, _, err = c.UpsertProject(ctx, api.Project{ID: p.ID, WorkspaceID: ws, Slug: p.Slug, GitRemote: remote})
-			if err != nil {
-				return nil, fmt.Errorf("project: %w", err)
-			}
-			out.ProjectNew = true
-		} else if pr.GitRemote == "" && remote != "" {
-			pr, _, _ = c.UpsertProject(ctx, api.Project{ID: pr.ID, WorkspaceID: pr.WorkspaceID, Slug: pr.Slug, Name: pr.Name, GitRemote: remote})
-		}
-		out.Project = pr
+		out.Project, out.ProjectNew = pr, created
 	}
 
 	if p.Workspace != ws {
@@ -134,6 +124,36 @@ func Reconcile(ctx context.Context, c *api.Client, p *project.Project) (*Reconci
 	return out, nil
 }
 
+// ensureProject makes sure this project binding exists in the account under
+// workspace ws, and that its git remote is the current one. Create when the
+// API has no such project; refresh only the remote (keeping the API's slug
+// and name) when it differs after normalisation; otherwise one GET and
+// nothing written, so repeated syncs are idempotent. Projects stay out of the
+// general push: they are bindings, not LWW rows (GRS-27). Callers skip the
+// workspace root, which is a workspace, never a project row.
+func ensureProject(ctx context.Context, c *api.Client, p *project.Project, ws string) (*api.Project, bool, error) {
+	pr, err := c.GetProject(ctx, p.ID)
+	if err != nil {
+		return nil, false, fmt.Errorf("project: %w", err)
+	}
+	remote := gitx.RemoteURL(p.Root)
+	if pr == nil {
+		pr, _, err = c.UpsertProject(ctx, api.Project{ID: p.ID, WorkspaceID: ws, Slug: p.Slug, GitRemote: remote})
+		if err != nil {
+			return nil, false, fmt.Errorf("project: %w", err)
+		}
+		return pr, true, nil
+	}
+	if remote != "" && gitx.NormalizeRemote(pr.GitRemote) != gitx.NormalizeRemote(remote) {
+		up, _, err := c.UpsertProject(ctx, api.Project{ID: pr.ID, WorkspaceID: pr.WorkspaceID, Slug: pr.Slug, Name: pr.Name, GitRemote: remote})
+		if err != nil {
+			return nil, false, fmt.Errorf("project: %w", err)
+		}
+		pr = up
+	}
+	return pr, false, nil
+}
+
 // workspaceOf is the workspace id this project syncs to.
 func workspaceOf(p *project.Project) string { return p.WorkspaceID() }
 
@@ -151,10 +171,18 @@ func workspaceSlug(p *project.Project) string {
 func Run(ctx context.Context, c *api.Client, p *project.Project) (*Report, error) {
 	ws := workspaceOf(p)
 	if p.Workspace == "" {
+		// Reconcile binds and makes sure workspace and project exist.
 		if _, err := Reconcile(ctx, c, p); err != nil {
 			return nil, err
 		}
 		ws = workspaceOf(p)
+	} else if !p.IsWorkspace() {
+		// Already bound: still make sure the project is in the account, so
+		// a project bound before it was ever pushed (or whose remote moved)
+		// shows up without another gears login (GRS-27).
+		if _, _, err := ensureProject(ctx, c, p, ws); err != nil {
+			return nil, err
+		}
 	}
 	r := &Report{Host: c.Host, Workspace: ws, Project: p.ID, Notes: []string{}}
 	db, err := store.Open(p)

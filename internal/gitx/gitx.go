@@ -115,3 +115,22 @@ func RemoteURL(dir string) string {
 	}
 	return out
 }
+
+// NormalizeRemote makes git@github.com:a/b.git and https://github.com/a/b
+// compare equal: host/path, lower-case, no scheme, no .git. Same rule as
+// gears-api, so a remote the API already holds is not re-sent every sync.
+func NormalizeRemote(r string) string {
+	r = strings.TrimSpace(r)
+	if r == "" {
+		return ""
+	}
+	r = strings.TrimSuffix(r, ".git")
+	if i := strings.Index(r, "://"); i >= 0 {
+		r = r[i+3:]
+	}
+	if i := strings.Index(r, "@"); i >= 0 && !strings.Contains(r[:i], "/") {
+		r = r[i+1:]
+	}
+	r = strings.Replace(r, ":", "/", 1)
+	return strings.ToLower(strings.TrimSuffix(r, "/"))
+}
