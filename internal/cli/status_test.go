@@ -13,7 +13,7 @@ import (
 )
 
 func bigStatus() *verbs.StatusOut {
-	out := &verbs.StatusOut{Project: "gears", ProjectID: "01a1-proj", Prefix: "GRS", Agent: "claude-local",
+	out := &verbs.StatusOut{Project: "gears", ProjectID: "01a1-proj", Prefix: "GRS", Agent: verbs.AgentInfo{Label: "claude-local", Source: "env", SourceText: "the GEARS_AGENT environment variable", HowToChange: verbs.AgentHowToChange()},
 		Cards:     verbs.CardStats{Open: 10, ByState: []verbs.CardState{{Name: "Backlog", Count: 6, Default: true}, {Name: "In Progress", Count: 4}}},
 		Artifacts: verbs.ArtifactStats{Total: 5, ByPrefix: map[string]int{"free": 5}},
 		Runs:      []verbs.RunSummary{}, NextAction: "work the desk: 16 open item(s)", IsWorkspace: true,
@@ -115,5 +115,26 @@ func TestCut(t *testing.T) {
 	}
 	if got := cut("short", 10); got != "short" {
 		t.Errorf("cut: %q", got)
+	}
+}
+
+// GRS-21: the glance names the agent, its source and how to change it; the
+// full block (status --full, whoami) lists every way.
+func TestStatusAgentLines(t *testing.T) {
+	var b bytes.Buffer
+	printStatusBrief(&b, bigStatus(), 200, false)
+	got := b.String()
+	for _, want := range []string{"agent     claude-local  (from GEARS_AGENT)", "change: gears -a <name>", "gears login --label <name>"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("brief lacks %q:\n%s", want, got)
+		}
+	}
+	b.Reset()
+	printAgent(&b, bigStatus().Agent)
+	got = b.String()
+	for _, want := range []string{"agent     claude-local  (from the GEARS_AGENT environment variable)", "to change it:", "gears -a <name> <command>", "export GEARS_AGENT=<name>", "set GEARS_AGENT=<name>", ".mcp.json", "gears login --label <name>"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("agent block lacks %q:\n%s", want, got)
+		}
 	}
 }

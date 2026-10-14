@@ -43,13 +43,42 @@ func (e Entry) Short() string {
 	return e.ID[len(e.ID)-8:]
 }
 
-// DefaultAgent is the label used when none is given: $GEARS_AGENT, else
-// "local". Real agent identity arrives with gears login.
-func DefaultAgent() string {
-	if a := strings.TrimSpace(os.Getenv("GEARS_AGENT")); a != "" {
-		return a
+// Where the acting agent's label came from (GRS-21), in precedence order.
+const (
+	AgentFromFlag    = "flag"    // gears -a <name> / --agent
+	AgentFromEnv     = "env"     // $GEARS_AGENT (also the MCP server's env in .mcp.json)
+	AgentFromLogin   = "login"   // the label saved by gears login --label for the API host
+	AgentFromDefault = "default" // nothing set: "local"
+)
+
+// LoginLabel returns the device login label for the current API host, or
+// "". The CLI sets it (the credentials file lives in package api); left
+// nil, as in package tests, the login step is skipped.
+var LoginLabel func() string
+
+// ResolveAgent is the acting agent's label and where it came from: the
+// -a flag value when given, else $GEARS_AGENT, else the device login
+// label, else "local".
+func ResolveAgent(flag string) (label, source string) {
+	if a := strings.TrimSpace(flag); a != "" {
+		return a, AgentFromFlag
 	}
-	return "local"
+	if a := strings.TrimSpace(os.Getenv("GEARS_AGENT")); a != "" {
+		return a, AgentFromEnv
+	}
+	if LoginLabel != nil {
+		if a := strings.TrimSpace(LoginLabel()); a != "" {
+			return a, AgentFromLogin
+		}
+	}
+	return "local", AgentFromDefault
+}
+
+// DefaultAgent is the label used when none is given: $GEARS_AGENT, else
+// the device login label, else "local".
+func DefaultAgent() string {
+	a, _ := ResolveAgent("")
+	return a
 }
 
 // Append writes one workspace-level entry. See AppendFor.

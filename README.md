@@ -18,6 +18,14 @@ to the root and tag session entries and new artifacts with that project;
 still runs `gears init` on its own. For an MCP harness, point it at
 `gears run --dir <workspace root>` with `GEARS_AGENT` set to the agent's label.
 
+The agent label (GRS-21) comes from, strongest first: `gears -a <name>`, then
+`GEARS_AGENT` (for an MCP server, its `env` in `.mcp.json`), then the label
+saved by `gears login --label <name>` for the API host, else `local`.
+`gears status` and `gears whoami` print the label, where it came from and how
+to change it; their JSON (and the MCP tools) carry
+`agent: {label, source, sourceText, howToChange}` with source `flag`, `env`,
+`login` or `default`.
+
 Account and sync (slice 1):
 
     gears login --email you@example.com      # device token to ~/.gears/credentials.json,

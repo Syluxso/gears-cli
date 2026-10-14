@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Syluxso/gears-cli/internal/api"
 	"github.com/Syluxso/gears-cli/internal/project"
 	"github.com/Syluxso/gears-cli/internal/session"
 	"github.com/Syluxso/gears-cli/internal/verbs"
@@ -33,7 +34,18 @@ var root = &cobra.Command{
 
 func init() {
 	root.PersistentFlags().BoolVar(&jsonOut, "json", false, "print the result as JSON (the same shape the MCP tools return)")
-	root.PersistentFlags().StringVarP(&globalAgent, "agent", "a", "", "act as this agent (default: $GEARS_AGENT or \"local\")")
+	root.PersistentFlags().StringVarP(&globalAgent, "agent", "a", "", "act as this agent (default: $GEARS_AGENT, else the gears login --label, else \"local\")")
+	session.LoginLabel = loginLabelFor
+}
+
+// loginLabelFor is the label gears login saved for the current API host,
+// the third place the acting agent comes from (GRS-21).
+func loginLabelFor() string {
+	creds, err := api.LoadCredentials()
+	if err != nil {
+		return ""
+	}
+	return creds.Hosts[api.Host()].Label
 }
 
 // Execute runs the root command and prints any error on stderr.
@@ -61,11 +73,8 @@ func ctxAt(dir string) (verbs.Ctx, error) {
 	if err != nil {
 		return verbs.Ctx{}, err
 	}
-	agent := globalAgent
-	if agent == "" {
-		agent = session.DefaultAgent()
-	}
-	return verbs.Ctx{Project: p, Agent: agent, Current: project.Current(p, dir), Notes: os.Stderr}, nil
+	agent, source := session.ResolveAgent(globalAgent)
+	return verbs.Ctx{Project: p, Agent: agent, AgentSource: source, Current: project.Current(p, dir), Notes: os.Stderr}, nil
 }
 
 // emit prints v as JSON when --json is set and returns true; otherwise it

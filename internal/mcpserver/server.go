@@ -18,7 +18,7 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "gears", Version: version}, nil)
 
 	add(s, c, "status",
-		"Cold-start packet for the whole workspace. Run first in every session: every project (manifest, projects/ on disk, gears-api when logged in) with tech, git remote, branch, last commit, dirty count, ahead/behind and README line; open desk items for this agent, active runs, artifact counts and shape problems, today's session entries, and a suggested next action.",
+		"Cold-start packet for the whole workspace. Run first in every session: every project (manifest, projects/ on disk, gears-api when logged in) with tech, git remote, branch, last commit, dirty count, ahead/behind and README line; open desk items for this agent, active runs, artifact counts and shape problems, today's session entries, and a suggested next action. agent {label, source (flag|env|login|default), howToChange} says who you are acting as and how to change it.",
 		verbs.Status)
 
 	add(s, c, "desk_list", "Open desk items addressed to this agent or to anyone. Set all to include closed items.", verbs.DeskList)
@@ -60,7 +60,7 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 	add(s, c, "projects_list", "The workspace's projects from .gears/projects.yaml: id, slug, path (projects/<repo>), git remote, and missing when the repo is gone. current is the project this server runs in. Pass a slug or id as project on session_new or artifact_new to tag work against another one.", verbs.ProjectsList)
 	add(s, c, "projects_scan", "Scan <workspace root>/projects/*/ for git repos and record them in .gears/projects.yaml. New repos take the id gears-api already holds for their remote (when logged in), else a fresh one that sync reconciles; repos that are gone are marked missing, never dropped. Only the workspace root has .gears.", verbs.ProjectsScan)
 	add(s, c, "sync", "Push local desk, session, artifact and card changes to gears-api, then pull and apply changes from the workspace. Needs gears login first. Cards also sync on their own, at every card write and read.", verbs.Sync)
-	add(s, c, "whoami", "Which API host, whether the saved device token works, and the workspace this project syncs to.", verbs.Whoami)
+	add(s, c, "whoami", "Which API host, whether the saved device token works, the workspace this project syncs to, and the agent label in use: agent {label, source (flag|env|login|default), howToChange}.", verbs.Whoami)
 	add(s, c, "export", "Dump the local record (every table, every row) as JSON, or to a file with out. The record is not committed; this is its backup until sync exists.", verbs.Export)
 
 	add(s, c, "runbook_list", "Runbooks in this project, the active runs, the step vocabulary and the rules (one run per agent; owner advances; a run owns its card; evidence is Gears or git objects only).", verbs.RunbookList)

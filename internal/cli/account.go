@@ -195,6 +195,7 @@ var whoamiCmd = &cobra.Command{
 			fmt.Printf("%s  not logged in: %s\n", out.Host, out.Error)
 		}
 		fmt.Printf("workspace %s  project %s\n", short(out.Workspace), short(out.Project))
+		printAgent(os.Stdout, out.Agent)
 		return nil
 	},
 }

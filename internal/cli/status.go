@@ -116,7 +116,8 @@ func printStatusBrief(w io.Writer, out *verbs.StatusOut, width int, colour bool)
 	}
 
 	line(fmt.Sprintf("%-9s %s  %s  (cards %s-n)", bindingLabel(out), out.Project, out.ProjectID, out.Prefix))
-	line(fmt.Sprintf("agent     %s", out.Agent))
+	line(fmt.Sprintf("agent     %s  (from %s)", out.Agent.Label, agentSourceShort(out.Agent.Source)))
+	line("  change: gears -a <name> ... | GEARS_AGENT=<name> (env; .mcp.json env for MCP) | gears login --label <name>")
 
 	fmt.Fprintln(w)
 	head("projects", projectsHeader(out))
@@ -221,7 +222,7 @@ func printStatusBrief(w io.Writer, out *verbs.StatusOut, width int, colour bool)
 // printStatusFull is the untrimmed text: every item, uncut, no colour.
 func printStatusFull(out *verbs.StatusOut) {
 	fmt.Printf("%-9s %s  %s  (cards %s-n)\n", bindingLabel(out), out.Project, out.ProjectID, out.Prefix)
-	fmt.Printf("agent     %s\n", out.Agent)
+	printAgent(os.Stdout, out.Agent)
 	fmt.Printf("root      %s\n", out.Root)
 
 	fmt.Printf("\nprojects  %s\n", projectsHeader(out))
@@ -472,4 +473,27 @@ func parseTS(s string) time.Time {
 		return time.Time{}
 	}
 	return t
+}
+
+// agentSourceShort names where the agent label came from, for one line.
+func agentSourceShort(source string) string {
+	switch source {
+	case "flag":
+		return "-a flag"
+	case "env":
+		return "GEARS_AGENT"
+	case "login":
+		return "gears login --label"
+	}
+	return "default; nothing set"
+}
+
+// printAgent is the agent block of status --full and whoami (GRS-21): the
+// label, where it came from, and every way to change it.
+func printAgent(w io.Writer, a verbs.AgentInfo) {
+	fmt.Fprintf(w, "agent     %s  (from %s)\n", a.Label, a.SourceText)
+	fmt.Fprintln(w, "  to change it:")
+	for _, h := range a.HowToChange {
+		fmt.Fprintln(w, "    "+h)
+	}
 }

@@ -38,12 +38,16 @@ type WhoamiOut struct {
 	Workspace string `json:"workspace"`
 	Project   string `json:"project"`
 	Error     string `json:"error,omitempty"`
+	// Agent is the label this install acts as locally, where it came from
+	// and how to change it (GRS-21). Label above is the device's label on
+	// the API.
+	Agent AgentInfo `json:"agent"`
 }
 
 // Whoami reports the API host, whether a token is saved and still accepted,
 // and the workspace this project syncs to.
 func Whoami(c Ctx, _ WhoamiIn) (*WhoamiOut, error) {
-	out := &WhoamiOut{Host: api.Host(), Workspace: c.Project.WorkspaceID(), Project: c.Project.ID}
+	out := &WhoamiOut{Host: api.Host(), Workspace: c.Project.WorkspaceID(), Project: c.Project.ID, Agent: c.agentInfo()}
 	cl, err := api.Open(out.Host)
 	if err != nil {
 		out.Error = err.Error()

@@ -29,7 +29,9 @@ import (
 type Ctx struct {
 	Project *project.Project
 	Agent   string
-	Current *project.ManifestEntry
+	// AgentSource is where Agent came from: session.AgentFrom* (GRS-21).
+	AgentSource string
+	Current     *project.ManifestEntry
 	// Notes receives one-line notes a verb has for a person (the CLI sets
 	// stderr): a card write that could not reach gears-api, for one. The
 	// MCP server leaves it nil; its results carry the note.
@@ -96,7 +98,7 @@ type StatusOut struct {
 	// Current is the project the working directory is in (GRS-40); absent
 	// at the workspace root.
 	Current    *project.ManifestEntry `json:"current,omitempty"`
-	Agent      string                 `json:"agent"`
+	Agent      AgentInfo              `json:"agent"`
 	Prefix     string                 `json:"prefix"`
 	Desk       []DeskItem             `json:"desk"`
 	Cards      CardStats              `json:"cards"`
@@ -133,7 +135,7 @@ type ArtifactStats struct {
 
 // Status assembles everything an agent needs before it starts.
 func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
-	out := &StatusOut{Project: c.Project.Slug, ProjectID: c.Project.ID, Root: c.Project.Root, Agent: c.agent(), Prefix: c.Project.Prefix,
+	out := &StatusOut{Project: c.Project.Slug, ProjectID: c.Project.ID, Root: c.Project.Root, Agent: c.agentInfo(), Prefix: c.Project.Prefix,
 		IsWorkspace: c.Project.IsWorkspace(), Desk: []DeskItem{}, Runs: []RunSummary{}, Session: []SessionLine{},
 		Cards:     CardStats{ByState: []CardState{}, Mine: []CardLine{}, Ready: []CardLine{}},
 		Artifacts: ArtifactStats{ByPrefix: map[string]int{}, Problems: []string{}}, Current: c.Current}
@@ -156,7 +158,7 @@ func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 	down := make(chan bool, 1) // buffered: an early return never strands it
 	go func() { down <- c.cardsDown() }()
 
-	items, err := desk.List(c.Project, desk.Filter{Agent: out.Agent})
+	items, err := desk.List(c.Project, desk.Filter{Agent: out.Agent.Label})
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +187,7 @@ func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 		counts := map[string]int{}
 		for _, cd := range cards {
 			counts[cd.State]++
-			if cd.Assignee == out.Agent {
+			if cd.Assignee == out.Agent.Label {
 				out.Cards.Mine = append(out.Cards.Mine, CardLine{cd.Key, cd.Type, cd.State, "P" + itoa(cd.Priority), cd.Title})
 			}
 		}
