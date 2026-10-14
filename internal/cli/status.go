@@ -117,7 +117,7 @@ func printStatusBrief(w io.Writer, out *verbs.StatusOut, width int, colour bool)
 
 	line(fmt.Sprintf("%-9s %s  %s  (cards %s-n)", bindingLabel(out), out.Project, out.ProjectID, out.Prefix))
 	line(fmt.Sprintf("agent     %s  (from %s)", out.Agent.Label, agentSourceShort(out.Agent.Source)))
-	line("  change: gears -a <name> ... | GEARS_AGENT=<name> (env; .mcp.json env for MCP) | gears login --label <name>")
+	line("  change: gears -a <name> | GEARS_AGENT=<name> (.mcp.json env for MCP) | gears login --label <name>")
 
 	fmt.Fprintln(w)
 	head("projects", projectsHeader(out))
