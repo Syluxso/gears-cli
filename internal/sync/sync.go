@@ -443,7 +443,23 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 	if err != nil {
 		return err
 	}
-	var contentFor []artifact.Artifact
+	// Content (GRS-20): every artifact whose file differs from the body the
+	// API last took, whatever its row's age, so a failed upload is retried
+	// on each sync until it lands.
+	var contentFor []contentUp
+	uploaded, err := contentHashes(db)
+	if err != nil {
+		return err
+	}
+	for _, a := range arts {
+		if a.FilePresent {
+			if b, err := os.ReadFile(a.Path); err == nil {
+				if h := artifact.Hash(string(b)); h != uploaded[a.ID] {
+					contentFor = append(contentFor, contentUp{a: a, body: b, hash: h})
+				}
+			}
+		}
+	}
 	for _, a := range arts {
 		updated := a.UpdatedAt.UTC().Format(time.RFC3339)
 		if since != "" && updated < since {
@@ -457,9 +473,6 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 			row["projectId"] = a.ProjectID
 		}
 		in.Rows["artifacts"] = append(in.Rows["artifacts"], row)
-		if a.FilePresent {
-			contentFor = append(contentFor, a)
-		}
 	}
 
 	// Deletes: tombstones left by a local delete, pushed until the server
@@ -494,6 +507,7 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 		}
 	}
 
+	failedRow := map[string]bool{}
 	total := len(in.Rows["desk_items"]) + len(in.Rows["session_entries"]) + len(in.Rows["artifacts"]) + nDeletes + cs.sent
 	if total > 0 {
 		out, err := c.Push(ctx, ws, in)
@@ -514,7 +528,7 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 			}
 		}
 		r.Pushed, r.Skipped, r.Failed = out.Applied, out.Skipped, out.Failed
-		failed := map[string]bool{}
+		failed := failedRow
 		for _, res := range out.Results {
 			if res.Error != "" {
 				failed[res.Table+"/"+res.ID] = true
@@ -531,14 +545,15 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 		}
 	}
 	// Content after rows, so the row exists server-side.
-	for _, a := range contentFor {
-		body, err := os.ReadFile(a.Path)
-		if err != nil {
-			continue
+	// A failure leaves content_hash as it was: the next sync tries again.
+	for _, u := range contentFor {
+		a := u.a
+		if failedRow["artifacts/"+a.ID] {
+			continue // no row on the API to hang the body on; retried next sync
 		}
-		fileID, ok, err := c.PutArtifactContent(ctx, a.ID, body)
+		fileID, ok, err := c.PutArtifactContent(ctx, a.ID, u.body)
 		if err != nil {
-			r.Notes = append(r.Notes, "content "+a.File+": "+err.Error())
+			r.Notes = append(r.Notes, "content "+a.File+": "+err.Error()+" (retried on the next sync)")
 			continue
 		}
 		if !ok {
@@ -547,7 +562,9 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 		}
 		r.ContentUp++
 		if fileID != "" {
-			_, _ = db.Exec(`UPDATE artifacts SET remote_file_id = ? WHERE id = ?`, fileID, a.ID)
+			_, _ = db.Exec(`UPDATE artifacts SET remote_file_id = ?, content_hash = ? WHERE id = ?`, fileID, u.hash, a.ID)
+		} else {
+			_, _ = db.Exec(`UPDATE artifacts SET content_hash = ? WHERE id = ?`, u.hash, a.ID)
 		}
 	}
 	if cs.ok {
@@ -718,7 +735,8 @@ func apply(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, c
 				if err := os.MkdirAll(p.ArtifactsDir(), 0o755); err == nil && os.WriteFile(path, body, 0o644) == nil {
 					r.ContentDown++
 					fetched = true
-					_, _ = db.Exec(`UPDATE artifacts SET file_present = 1 WHERE id = ?`, a.ID)
+					// The API holds this body: nothing to upload back.
+					_, _ = db.Exec(`UPDATE artifacts SET file_present = 1, content_hash = ? WHERE id = ?`, artifact.Hash(string(body)), a.ID)
 				}
 			}
 		}
@@ -726,6 +744,10 @@ func apply(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, c
 		// holds a different one: keep the row on the local hash, so
 		// Reconcile does not read the file as an edit and push it over the
 		// server's row. A missing file is regenerated the same way.
+		// The API has a body and it is the one here: nothing to upload.
+		if a.FileID != "" && !fetched && localHash != "" && localHash == a.BodyHash {
+			_, _ = db.Exec(`UPDATE artifacts SET content_hash = ? WHERE id = ?`, localHash, a.ID)
+		}
 		if present && !fetched && localHash != "" && localHash != a.BodyHash {
 			_, _ = db.Exec(`UPDATE artifacts SET body_hash = ? WHERE id = ?`, localHash, a.ID)
 		}
@@ -833,4 +855,30 @@ func b2i(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// contentUp is one artifact body to upload, read once with its hash.
+type contentUp struct {
+	a    artifact.Artifact
+	body []byte
+	hash string
+}
+
+// contentHashes maps artifact id to the hash of the body the API last took
+// or gave (GRS-20); "" when it has none.
+func contentHashes(db *sql.DB) (map[string]string, error) {
+	rows, err := db.Query(`SELECT id, content_hash FROM artifacts`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var id, h string
+		if err := rows.Scan(&id, &h); err != nil {
+			return nil, err
+		}
+		out[id] = h
+	}
+	return out, rows.Err()
 }

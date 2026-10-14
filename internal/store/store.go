@@ -118,6 +118,10 @@ var columns = []struct{ table, column, def string }{
 	// the API's 7-day auto-close of terminal cards reads.
 	{"cards", "closed_at", "TEXT NOT NULL DEFAULT ''"},
 	{"cards", "state_changed_at", "TEXT NOT NULL DEFAULT ''"},
+	// GRS-20: content_hash is the hash (artifact.Hash) of the body the API
+	// last took or gave for this artifact; a file whose hash differs is
+	// uploaded on every sync until one succeeds.
+	{"artifacts", "content_hash", "TEXT NOT NULL DEFAULT ''"},
 }
 
 // backfill runs once, right after its column is added: rows from before the
@@ -129,6 +133,8 @@ var backfill = map[string][]string{
 	"cards.updated_by":                {`UPDATE cards SET updated_by = created_by WHERE updated_by = ''`},
 	// The best a row from before GRS-50 can say: its last write.
 	"cards.state_changed_at": {`UPDATE cards SET state_changed_at = updated_at WHERE state_changed_at = ''`},
+	// An artifact with a file id had its body uploaded: its row hash.
+	"artifacts.content_hash": {`UPDATE artifacts SET content_hash = body_hash WHERE remote_file_id <> ''`},
 }
 
 // after the columns: indexes on added columns.

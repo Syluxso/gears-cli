@@ -17,6 +17,7 @@ PORT=8221
 
 cleanup() {
   [ -n "${WATCH_PID:-}" ] && kill "$WATCH_PID" 2>/dev/null || true
+  [ -n "${FILES_PID:-}" ] && kill "$FILES_PID" 2>/dev/null || true
   [ -n "${API_PID:-}" ] && kill "$API_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -28,6 +29,14 @@ G="$WORK/gears.exe"
 
 ORG=$("$G" --version >/dev/null; python -c "import uuid;print(uuid.uuid4())")
 TEN=$(python -c "import uuid;print(uuid.uuid4())")
+# A stand-in byz-files (GRS-20): uploads fail while $FILES_FAIL exists.
+FILES_PORT=8222; FILES_FAIL="$WORK/files-fail"; FILES_COUNT="$WORK/files-count"
+python -I "$CLI_DIR/scripts/fake-byz-files.py" $FILES_PORT e2e-files-token "$(cygpath -w "$FILES_FAIL" 2>/dev/null || echo "$FILES_FAIL")" "$(cygpath -w "$FILES_COUNT" 2>/dev/null || echo "$FILES_COUNT")" >> "$WORK/files.log" 2>&1 &
+FILES_PID=$!
+for i in $(seq 1 20); do curl -sf "http://127.0.0.1:$FILES_PORT/healthz" >/dev/null 2>&1 && break; sleep 0.5; done
+curl -sf "http://127.0.0.1:$FILES_PORT/healthz" >/dev/null || { echo "fake byz-files did not start"; cat "$WORK/files.log"; exit 1; }
+uploads() { cat "$FILES_COUNT" 2>/dev/null || echo 0; }
+
 # start_api: this script's own throwaway gears-api (GRS-51 stops and
 # restarts it to prove an offline write queues).
 start_api() {
@@ -35,6 +44,7 @@ start_api() {
   DB_URL='postgres://db:db@127.0.0.1:5441/gears?sslmode=disable' \
   GEARS_PAT_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
   GEARS_DEV_TENANT="$ORG:$TEN" BYZ_KAFKA_ENABLED=false \
+  BYZ_FILES_URL="http://127.0.0.1:$FILES_PORT" BYZ_FILES_TOKEN=e2e-files-token \
   "$WORK/gears-api.exe" >> "$WORK/api.log" 2>&1 &
   API_PID=$!
   for i in $(seq 1 30); do curl -sf "$GEARS_API/healthz" >/dev/null 2>&1 && break; sleep 0.5; done
@@ -315,6 +325,19 @@ echo "ok: offline note: $(cat "$WORK/off.err")"
 start_api
 ( cd "$WS" && "$G" sync --json ) | python -c "import json,sys; r=json.load(sys.stdin); assert r['failed']==0, r; print('ok: sync after the outage pushed', r['pushed'])"
 ( cd "$C" && "$G" card show WS-4 --json ) | python -c "import json,sys; c=json.load(sys.stdin); assert any(x['body']=='written while the API was down' for x in c['comments']), c['comments']; print('ok: the queued comment reached the clone')"
+
+echo "== GRS-20: a failed content upload is retried on the next sync, then reaches the clone"
+( cd "$WS" && "$G" artifact new free "Retry body" >/dev/null && printf '\nretry body line\n' >> .gears/artifacts/free--retry-body.md && "$G" artifact reconcile >/dev/null )
+touch "$FILES_FAIL"; BEFORE=$(uploads)
+( cd "$WS" && "$G" sync --json ) | python -c "import json,sys; r=json.load(sys.stdin); assert r['contentUploaded']==0 and any('free--retry-body.md' in n and '502' in n for n in r['notes']), r; print('ok: upload failed:', [n for n in r['notes'] if 'retry-body' in n][0])"
+rm -f "$FILES_FAIL"
+sleep 1
+( cd "$WS" && "$G" sync --json ) | python -c "import json,sys; r=json.load(sys.stdin); assert r['contentUploaded']>=1 and not any('retry-body' in n for n in r['notes']), r; print('ok: next sync uploaded', r['contentUploaded'])"
+[ "$(uploads)" -gt "$BEFORE" ] || fail "byz-files saw no upload after the retry"
+( cd "$WS" && "$G" sync --json ) | python -c "import json,sys; r=json.load(sys.stdin); assert r['contentUploaded']==0, r; print('ok: uploaded once, not again')"
+( cd "$C" && "$G" sync --json ) | python -c "import json,sys; r=json.load(sys.stdin); assert r['contentDownloaded']>=1, r; print('ok: clone downloaded', r['contentDownloaded'])"
+grep -q "retry body line" "$C/.gears/artifacts/free--retry-body.md" || fail "clone has not got the body"
+( cd "$C" && "$G" sync --json ) | python -c "import json,sys; r=json.load(sys.stdin); assert r['contentUploaded']==0 and r['contentDownloaded']==0, r; print('ok: clone settles: nothing up, nothing down')"
 
 echo "== second sync is a no-op"
 # The push window includes the last push's second (stamps are to the
