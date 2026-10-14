@@ -52,6 +52,15 @@ Cards sync immediately (GRS-51), unlike desk, sessions and artifacts:
 - Card reads (`card list`, `card show`, the cards in `status`, and their MCP
   tools) pull the card tables first (1.5s timeout) unless the stream is
   open; on failure they answer from the cache with `"stale": true`.
+- `gears run --sync-interval N` (GRS-25) also runs a full `gears sync`
+  (desk, sessions, artifacts, cards) once at startup and then every N
+  minutes; 0, the default, is off. `GEARS_SYNC_INTERVAL=N` sets it from the
+  harness env (`.mcp.json` `env`); the flag wins. One line per sync on
+  stderr (`gears sync: pushed N, pulled M`), never stdout. It shares the
+  process's sync lock with the live board and card writes, so syncs never
+  overlap (a card write waits within its 3s budget, else stays queued). Not
+  logged in or offline: one note, then quiet skips until that changes.
+  Stops with the server.
 - Card-only pulls use `GET sync?tables=cards` and their own `cards_cursor`
   (the main cursor is the full sync's); an API that ignores `tables` gets a
   full pull instead. Needs one `gears sync` first. `GEARS_CARD_SYNC=off`

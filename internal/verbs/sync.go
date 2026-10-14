@@ -17,6 +17,12 @@ type SyncIn struct {
 // Sync pushes local desk, session, artifact and board rows changed since
 // the last push, then pulls and applies changes after the saved cursor.
 func Sync(c Ctx, in SyncIn) (*sync.Report, error) {
+	return SyncCtx(context.Background(), c, in)
+}
+
+// SyncCtx is Sync under ctx: gears run's periodic sync (GRS-25) stops
+// mid-sync on shutdown.
+func SyncCtx(ctx context.Context, c Ctx, in SyncIn) (*sync.Report, error) {
 	host := in.Host
 	if host == "" {
 		host = api.Host()
@@ -25,7 +31,7 @@ func Sync(c Ctx, in SyncIn) (*sync.Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	return sync.Run(context.Background(), cl, c.Project)
+	return sync.Run(ctx, cl, c.Project)
 }
 
 type WhoamiIn struct{}

@@ -288,8 +288,14 @@ func workspaceSlug(p *project.Project) string {
 	return p.Slug
 }
 
-// Run pushes then pulls.
+// Run pushes then pulls. It holds this process's sync lock throughout
+// (GRS-25): a second Run, a card write-through and the live stream's pull
+// wait for it, so syncs never overlap.
 func Run(ctx context.Context, c *api.Client, p *project.Project) (*Report, error) {
+	if err := cardsMu.lock(ctx); err != nil {
+		return nil, err
+	}
+	defer cardsMu.unlock()
 	ws := workspaceOf(p)
 	var rec *ReconcileOut
 	if p.Workspace == "" {

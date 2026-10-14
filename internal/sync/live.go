@@ -20,9 +20,12 @@ package sync
 // then raises cards_cursor to it. A change seen by both is applied twice,
 // which is harmless (last write wins by updatedAt).
 //
-// Locking: one mutex per process serialises the local half of card pushes
+// Locking: one lock per process serialises the local half of card pushes
 // and pulls (the MCP server runs tool calls and the stream at once), never
-// the HTTP request; across processes the cache's busy_timeout and
+// their HTTP request; a whole sync (Run: gears sync, the sync tool, the
+// periodic sync of gears run --sync-interval, GRS-25) holds it from start to
+// end, so two syncs never overlap and a card push or pull waits for it,
+// bounded by its own timeout. Across processes the cache's busy_timeout and
 // immediate transactions make writers wait instead of failing.
 
 import (
@@ -36,7 +39,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	gosync "sync"
 	"sync/atomic"
 	"time"
 
@@ -46,8 +48,33 @@ import (
 )
 
 // cardsMu serialises the local half of card pushes and pulls within one
-// process (reading pending rows, applying results); never a request.
-var cardsMu gosync.Mutex
+// process (reading pending rows, applying results), and every whole sync.
+// Waiting for it honours the caller's context: a card write's 3s budget
+// covers the wait too.
+var cardsMu = make(procLock, 1)
+
+// procLock is a mutex whose Lock gives up when ctx ends.
+type procLock chan struct{}
+
+func (l procLock) lock(ctx context.Context) error {
+	select {
+	case l <- struct{}{}:
+		return nil
+	default:
+	}
+	select {
+	case l <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("%w (%w)", ErrBusy, ctx.Err())
+	}
+}
+
+func (l procLock) unlock() { <-l }
+
+// ErrBusy means a sync in this process held the lock longer than the
+// caller would wait. The caller's rows stay queued for the next push.
+var ErrBusy = errors.New("a sync is running")
 
 // ErrCardsNotReady means this cache has never synced its board: the first
 // gears sync adopts the API's states and prefix and pulls the board whole.
@@ -103,11 +130,13 @@ func PushCards(ctx context.Context, c *api.Client, p *project.Project) (*CardPus
 	// The mutex covers reading and applying, never the request: a slow API
 	// must not hold up another tool call. Two pushes of the same rows are
 	// harmless (last write wins; a card keeps the number it was given).
-	cardsMu.Lock()
+	if err := cardsMu.lock(ctx); err != nil {
+		return nil, err
+	}
 	locked := true
 	defer func() {
 		if locked {
-			cardsMu.Unlock()
+			cardsMu.unlock()
 		}
 	}()
 	cs := &cardSync{ok: true, prefix: strings.ToUpper(strings.TrimSpace(p.Prefix)), inSync: map[string]bool{}, now: store.Now()}
@@ -141,13 +170,15 @@ func PushCards(ctx context.Context, c *api.Client, p *project.Project) (*CardPus
 	if out.Sent == 0 {
 		return out, nil
 	}
-	cardsMu.Unlock()
+	cardsMu.unlock()
 	locked = false
 	res, err := c.Push(ctx, ws, in)
 	if err != nil {
 		return nil, err
 	}
-	cardsMu.Lock()
+	if err := cardsMu.lock(ctx); err != nil {
+		return nil, err
+	}
 	locked = true
 	r := &Report{}
 	answered, err := applyCardResults(db, cs, res.Results, r)
@@ -264,7 +295,9 @@ func PullCards(ctx context.Context, c *api.Client, p *project.Project) (*CardPul
 		}
 		// Apply under the mutex (never the request): two pulls racing from
 		// the same cursor apply the same rows twice, which changes nothing.
-		cardsMu.Lock()
+		if err := cardsMu.lock(ctx); err != nil {
+			return out, err
+		}
 		sortForApply(page.Changes)
 		for _, ch := range page.Changes {
 			if !isCardTable(ch.Table) {
@@ -286,7 +319,7 @@ func PullCards(ctx context.Context, c *api.Client, p *project.Project) (*CardPul
 			cursor = page.Cursor
 		}
 		err = raiseCardsCursor(db, cursor)
-		cardsMu.Unlock()
+		cardsMu.unlock()
 		if err != nil {
 			return out, err
 		}
@@ -674,6 +707,8 @@ func shortErr(err error, host string) string {
 		return "closed"
 	}
 	switch {
+	case errors.Is(err, ErrBusy):
+		return ErrBusy.Error()
 	case errors.Is(err, context.DeadlineExceeded):
 		return hostName(host) + " did not answer in time"
 	case errors.Is(err, io.EOF):
