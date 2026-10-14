@@ -141,6 +141,30 @@ func init() {
 		return verbs.DeskDismiss(c, verbs.DeskIDIn{ID: id})
 	})
 
-	deskCmd.AddCommand(deskListCmd, deskSendCmd, read, answer, done, dismiss)
+	var clearAll bool
+	clear := &cobra.Command{
+		Use:   "clear",
+		Short: "Close open items of every type, handoffs included (--mine by default, --all for the workspace)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := ctx()
+			if err != nil {
+				return err
+			}
+			out, err := verbs.DeskClear(c, verbs.DeskClearIn{All: clearAll})
+			if emit(out) {
+				return err
+			}
+			if len(out.Closed) > 0 {
+				printDeskItems(out.Closed)
+			}
+			fmt.Printf("cleared %d item(s)\n", len(out.Closed))
+			return err
+		},
+	}
+	clear.Flags().BoolVar(&clearAll, "all", false, "every open item in the workspace, for everyone")
+	clear.Flags().Bool("mine", true, "only items addressed to you (the default)")
+
+	deskCmd.AddCommand(deskListCmd, deskSendCmd, read, answer, done, dismiss, clear)
 	root.AddCommand(deskCmd)
 }

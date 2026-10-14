@@ -206,6 +206,30 @@ func Dismiss(p *project.Project, key, agent string) (*Item, error) {
 	return closeAs(p, key, agent, "event")
 }
 
+// Clear closes open items of every type, handoffs included: with all, every
+// open item in the workspace; otherwise only items addressed to agent.
+func Clear(p *project.Project, agent string, all bool) ([]Item, error) {
+	if agent == "" {
+		agent = session.DefaultAgent()
+	}
+	open, err := List(p, Filter{})
+	if err != nil {
+		return nil, err
+	}
+	var closed []Item
+	for i := range open {
+		if !all && open[i].To != agent {
+			continue
+		}
+		it, err := close(p, &open[i], agent, "")
+		if err != nil {
+			return closed, err
+		}
+		closed = append(closed, *it)
+	}
+	return closed, nil
+}
+
 func closeAs(p *project.Project, key, agent, want string) (*Item, error) {
 	it, err := Get(p, key)
 	if err != nil {

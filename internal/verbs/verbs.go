@@ -353,6 +353,25 @@ func DeskDone(c Ctx, in DeskIDIn) (*DeskItem, error) {
 	return &d, nil
 }
 
+// DeskClearIn picks what desk_clear closes.
+type DeskClearIn struct {
+	All bool `json:"all,omitempty" jsonschema:"close every open item in the workspace; default only items addressed to you"`
+}
+
+// DeskClearOut lists what was closed.
+type DeskClearOut struct {
+	Closed []DeskItem `json:"closed"`
+}
+
+func DeskClear(c Ctx, in DeskClearIn) (*DeskClearOut, error) {
+	items, err := desk.Clear(c.Project, c.agent(), in.All)
+	out := &DeskClearOut{Closed: []DeskItem{}}
+	for _, it := range items {
+		out.Closed = append(out.Closed, deskItem(it))
+	}
+	return out, err
+}
+
 func DeskDismiss(c Ctx, in DeskIDIn) (*DeskItem, error) {
 	it, err := desk.Dismiss(c.Project, in.ID, c.agent())
 	if err != nil {

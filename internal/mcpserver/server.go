@@ -27,6 +27,7 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 	add(s, c, "desk_answer", "Close an ask with a reply. The reply is required.", verbs.DeskAnswer)
 	add(s, c, "desk_done", "Close a work item.", verbs.DeskDone)
 	add(s, c, "desk_dismiss", "Close an event without making it a card.", verbs.DeskDismiss)
+	add(s, c, "desk_clear", "Close open desk items of every type, handoffs included: items addressed to you, or every item in the workspace with all.", verbs.DeskClear)
 
 	add(s, c, "card_shapes", "Read before the first card_new: types, the required top-line section per type, seeded and offered sections, every section's fields, sizes, priorities, link kinds.", verbs.CardShapes)
 	add(s, c, "card_new", "Create a card on this project's board. Refused unless the type's top-line section and at least one acceptance line are present: story{asA,iWant,soThat}; defect{symptom,expected,actual}; task{what,soThat}; spike{question}; chore{what,why}; epic{outcome}. An empty brief is seeded for the agent. Search with card_list q first; it may exist. Lands in the default state with key <PREFIX>-<n>. Cards sync at once: every card write pushes to gears-api before it returns (the key is the API's) and its result carries sync {pushed, note}; offline it is saved locally and queued, never refused.", verbs.CardNew)
