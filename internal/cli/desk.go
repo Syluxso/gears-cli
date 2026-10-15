@@ -15,6 +15,7 @@ var (
 	deskTo       string
 	deskRef      string
 	deskAll      bool
+	deskAssign   string
 )
 
 var deskCmd = &cobra.Command{
@@ -43,6 +44,9 @@ func printDeskItems(items []verbs.DeskItem) {
 		}
 		if it.Answer != "" {
 			fmt.Printf("          answer: %s\n", it.Answer)
+		}
+		if it.Author != "" || it.AssignedTo != "" {
+			fmt.Printf("          by %s  for %s\n", orDash(it.Author), orDash(it.AssignedTo))
 		}
 	}
 }
@@ -77,14 +81,15 @@ var deskSendCmd = &cobra.Command{
 	Short: "Place an item on a desk",
 	Long: `  gears desk send --type ask --to grok-web "Is the branch GRS-14 ready to review?"
   gears desk send --type handoff "Tried X. Result Y. Next: Z."
-  gears desk send --type info --to claude-local "API port is 8220."`,
+  gears desk send --type info --to claude-local "API port is 8220."
+  gears desk send --type work --assign <user-id> "Review the schema."`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		out, err := verbs.DeskSend(c, verbs.DeskSendIn{Type: deskSendType, To: deskTo, Text: strings.Join(args, " "), Ref: deskRef})
+		out, err := verbs.DeskSend(c, verbs.DeskSendIn{Type: deskSendType, To: deskTo, Text: strings.Join(args, " "), Ref: deskRef, AssignedTo: deskAssign})
 		if err != nil {
 			return err
 		}
@@ -127,6 +132,7 @@ func init() {
 	deskSendCmd.Flags().StringVarP(&deskSendType, "type", "t", "info", "info | ask | event | work | handoff")
 	deskSendCmd.Flags().StringVar(&deskTo, "to", "", "agent label (default: anyone)")
 	deskSendCmd.Flags().StringVar(&deskRef, "ref", "", "optional pointer: card key, run id, artifact file")
+	deskSendCmd.Flags().StringVar(&deskAssign, "assign", "", "user id the item is for; with no --to, that person and any of their agents")
 
 	read := deskVerb("read <id>", "Read an item; info closes when read", 1, func(c verbs.Ctx, id string, _ []string) (*verbs.DeskItem, error) {
 		return verbs.DeskRead(c, verbs.DeskIDIn{ID: id})

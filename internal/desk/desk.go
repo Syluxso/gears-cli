@@ -38,6 +38,11 @@ type Item struct {
 	ClosedAt  time.Time
 	ClosedBy  string
 	Answer    string
+	// GRS-35: Author is the user who created the item (set by the API, ""
+	// until the item has synced); AssignedTo the user it is for ("" nobody
+	// in particular). From and To stay agent labels.
+	Author     string
+	AssignedTo string
 }
 
 // Short is the id shown in listings: the last eight digits. A v7 id's
@@ -55,6 +60,12 @@ func validType(t string) bool {
 
 // Send places an item on a desk. from defaults to the current agent.
 func Send(p *project.Project, typ, from, to, text, ref string) (*Item, error) {
+	return SendAssigned(p, typ, from, to, text, ref, "")
+}
+
+// SendAssigned is Send with the user the item is for (GRS-35): an account
+// id, "" for nobody in particular. The author is the API's to set.
+func SendAssigned(p *project.Project, typ, from, to, text, ref, assignedTo string) (*Item, error) {
 	typ = strings.ToLower(strings.TrimSpace(typ))
 	if !validType(typ) {
 		return nil, fmt.Errorf("type %q; one of %s", typ, strings.Join(Types, ", "))
@@ -72,11 +83,11 @@ func Send(p *project.Project, typ, from, to, text, ref string) (*Item, error) {
 	}
 	defer db.Close()
 
-	it := &Item{ID: project.NewID(), Type: typ, From: from, To: strings.TrimSpace(to), Text: text, Ref: ref, State: "open"}
+	it := &Item{ID: project.NewID(), Type: typ, From: from, To: strings.TrimSpace(to), Text: text, Ref: ref, State: "open", AssignedTo: strings.TrimSpace(assignedTo)}
 	now := store.Now()
-	if _, err := db.Exec(`INSERT INTO desk_items (id, type, from_agent, to_agent, text, ref, created_at, state)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'open')`,
-		it.ID, it.Type, it.From, it.To, it.Text, it.Ref, now); err != nil {
+	if _, err := db.Exec(`INSERT INTO desk_items (id, type, from_agent, to_agent, text, ref, created_at, state, assigned_to)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
+		it.ID, it.Type, it.From, it.To, it.Text, it.Ref, now, it.AssignedTo); err != nil {
 		return nil, err
 	}
 	it.CreatedAt = store.Parse(now)
@@ -101,7 +112,7 @@ func List(p *project.Project, f Filter) ([]Item, error) {
 	}
 	defer db.Close()
 
-	q := `SELECT id, type, from_agent, to_agent, text, ref, created_at, state, closed_at, closed_by, answer FROM desk_items WHERE 1=1`
+	q := `SELECT id, type, from_agent, to_agent, text, ref, created_at, state, closed_at, closed_by, answer, author, assigned_to FROM desk_items WHERE 1=1`
 	var args []any
 	if !f.All {
 		q += ` AND state = 'open'`
@@ -124,7 +135,7 @@ func List(p *project.Project, f Filter) ([]Item, error) {
 	for rows.Next() {
 		var it Item
 		var created, closed string
-		if err := rows.Scan(&it.ID, &it.Type, &it.From, &it.To, &it.Text, &it.Ref, &created, &it.State, &closed, &it.ClosedBy, &it.Answer); err != nil {
+		if err := rows.Scan(&it.ID, &it.Type, &it.From, &it.To, &it.Text, &it.Ref, &created, &it.State, &closed, &it.ClosedBy, &it.Answer, &it.Author, &it.AssignedTo); err != nil {
 			return nil, err
 		}
 		it.CreatedAt = store.Parse(created)

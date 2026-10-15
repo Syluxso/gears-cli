@@ -398,19 +398,21 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 	in := api.PushIn{Rows: map[string][]any{}}
 
 	// Desk items: anything created or closed since the last push.
-	rows, err := db.Query(`SELECT id, type, from_agent, to_agent, text, ref, created_at, state, closed_at, answer, updated_at FROM desk_items
+	// assignedTo always goes up ("" clears it on the API); author never does:
+	// the API sets it from the token (GRS-35).
+	rows, err := db.Query(`SELECT id, type, from_agent, to_agent, text, ref, created_at, state, closed_at, answer, updated_at, assigned_to FROM desk_items
 		WHERE created_at >= ? OR closed_at >= ? OR updated_at >= ?`, since, since, since)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
-		var id, typ, from, to, text, ref, created, state, closed, answer, updated string
-		if err := rows.Scan(&id, &typ, &from, &to, &text, &ref, &created, &state, &closed, &answer, &updated); err != nil {
+		var id, typ, from, to, text, ref, created, state, closed, answer, updated, assigned string
+		if err := rows.Scan(&id, &typ, &from, &to, &text, &ref, &created, &state, &closed, &answer, &updated, &assigned); err != nil {
 			rows.Close()
 			return err
 		}
 		row := map[string]any{"id": id, "type": typ, "from": from, "to": to, "text": text, "ref": ref, "state": state, "answer": answer, "createdAt": created,
-			"updatedAt": latest(created, closed, updated)}
+			"updatedAt": latest(created, closed, updated), "assignedTo": assigned}
 		if closed != "" {
 			row["closedAt"] = closed
 		}
@@ -634,9 +636,10 @@ func apply(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, c
 			return true, err
 		}
 		var d struct {
-			ID, Type, From, To, Text, Ref, State, Answer string
-			CreatedAt, UpdatedAt                         time.Time
-			ClosedAt                                     *time.Time
+			ID, Type, From, To, Text, Ref, State, Answer, Author string
+			AssignedTo                                           *string
+			CreatedAt, UpdatedAt                                 time.Time
+			ClosedAt                                             *time.Time
 		}
 		if err := json.Unmarshal(ch.Row, &d); err != nil {
 			return false, err
@@ -645,11 +648,17 @@ func apply(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, c
 		if d.ClosedAt != nil {
 			closed = d.ClosedAt.UTC().Format(time.RFC3339)
 		}
-		_, err := db.Exec(`INSERT INTO desk_items (id, type, from_agent, to_agent, text, ref, created_at, state, closed_at, closed_by, answer, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
+		assigned := ""
+		if d.AssignedTo != nil {
+			assigned = *d.AssignedTo
+		}
+		_, err := db.Exec(`INSERT INTO desk_items (id, type, from_agent, to_agent, text, ref, created_at, state, closed_at, closed_by, answer, updated_at, author, assigned_to)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET type = excluded.type, from_agent = excluded.from_agent, to_agent = excluded.to_agent, text = excluded.text,
-				ref = excluded.ref, state = excluded.state, closed_at = excluded.closed_at, answer = excluded.answer, updated_at = excluded.updated_at`,
-			d.ID, d.Type, d.From, d.To, d.Text, d.Ref, d.CreatedAt.UTC().Format(time.RFC3339), d.State, closed, d.Answer, d.UpdatedAt.UTC().Format(time.RFC3339))
+				ref = excluded.ref, state = excluded.state, closed_at = excluded.closed_at, answer = excluded.answer, updated_at = excluded.updated_at,
+				author = excluded.author, assigned_to = excluded.assigned_to`,
+			d.ID, d.Type, d.From, d.To, d.Text, d.Ref, d.CreatedAt.UTC().Format(time.RFC3339), d.State, closed, d.Answer, d.UpdatedAt.UTC().Format(time.RFC3339),
+			d.Author, assigned)
 		return true, err
 	case "session_entries":
 		if ch.Deleted {

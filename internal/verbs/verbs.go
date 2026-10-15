@@ -272,12 +272,16 @@ type DeskItem struct {
 	ClosedBy  string `json:"closedBy,omitempty"`
 	Answer    string `json:"answer,omitempty"`
 	Closer    string `json:"closer,omitempty"` // the verb that closes this type; empty for handoff
+	// GRS-35: the user who created it (set by the API; "" until synced) and
+	// the user it is for ("" nobody in particular).
+	Author     string `json:"author"`
+	AssignedTo string `json:"assignedTo,omitempty"`
 }
 
 func deskItem(it desk.Item) DeskItem {
 	return DeskItem{ID: it.ID, Type: it.Type, From: it.From, To: it.To, Text: it.Text, Ref: it.Ref,
 		CreatedAt: ts(it.CreatedAt), State: it.State, ClosedAt: ts(it.ClosedAt), ClosedBy: it.ClosedBy,
-		Answer: it.Answer, Closer: desk.Closer[it.Type]}
+		Answer: it.Answer, Closer: desk.Closer[it.Type], Author: it.Author, AssignedTo: it.AssignedTo}
 }
 
 type DeskListIn struct {
@@ -307,10 +311,11 @@ type DeskSendIn struct {
 	To   string `json:"to,omitempty" jsonschema:"Agent label to address. Empty means anyone in the tenant."`
 	Text string `json:"text" jsonschema:"The item. For handoff: what was tried, the result, what comes next."`
 	Ref  string `json:"ref,omitempty" jsonschema:"Optional pointer: a card key, run id, or artifact file."`
+	AssignedTo string `json:"assignedTo,omitempty" jsonschema:"The user (account id) the item is for; empty for nobody in particular."`
 }
 
 func DeskSend(c Ctx, in DeskSendIn) (*DeskItem, error) {
-	it, err := desk.Send(c.Project, in.Type, c.agent(), in.To, in.Text, in.Ref)
+	it, err := desk.SendAssigned(c.Project, in.Type, c.agent(), in.To, in.Text, in.Ref, in.AssignedTo)
 	if err != nil {
 		return nil, err
 	}

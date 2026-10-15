@@ -122,6 +122,10 @@ var columns = []struct{ table, column, def string }{
 	// last took or gave for this artifact; a file whose hash differs is
 	// uploaded on every sync until one succeeds.
 	{"artifacts", "content_hash", "TEXT NOT NULL DEFAULT ''"},
+	// GRS-35: author is the user (account id) who created the item, set by
+	// the API and pulled back; assigned_to the user it is for ("" nobody).
+	{"desk_items", "author", "TEXT NOT NULL DEFAULT ''"},
+	{"desk_items", "assigned_to", "TEXT NOT NULL DEFAULT ''"},
 }
 
 // backfill runs once, right after its column is added: rows from before the
