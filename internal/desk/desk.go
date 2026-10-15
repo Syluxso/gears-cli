@@ -99,10 +99,14 @@ type Filter struct {
 	Agent string // show items addressed to this agent or to anyone
 	All   bool   // include closed items
 	Type  string
-	// GRS-36, with Agent: the person this install is and the other labels
-	// they use. An item is theirs when it is assigned to User, authored by
-	// User, or addressed to Agent or one of Labels; an item addressed to
-	// nobody and assigned to nobody is everyone's.
+	// With Agent: the person this install is (User) and the other labels
+	// they use. This is the API's desk privacy rule (GRS-48) applied to the
+	// cache: an item is theirs when they made it (authored by User, or sent
+	// from Agent or one of Labels) or it is for them (assigned to User, or
+	// addressed to Agent or one of Labels); an item addressed to nobody and
+	// assigned to nobody is everyone's. The cache holds only what the API
+	// lets this person see (plus what was written here and not yet pushed),
+	// so the filter never assumes it holds the whole workspace desk.
 	User   string
 	Labels []string
 }
@@ -124,12 +128,12 @@ func List(p *project.Project, f Filter) ([]Item, error) {
 		q += ` AND state = 'open'`
 	}
 	if f.Agent != "" {
-		q += ` AND ((to_agent = '' AND assigned_to = '') OR to_agent = ?`
-		args = append(args, f.Agent)
+		q += ` AND ((to_agent = '' AND assigned_to = '') OR lower(to_agent) = lower(?) OR lower(from_agent) = lower(?)`
+		args = append(args, f.Agent, f.Agent)
 		for _, l := range f.Labels {
 			if l = strings.TrimSpace(l); l != "" {
-				q += ` OR to_agent = ?`
-				args = append(args, l)
+				q += ` OR lower(to_agent) = lower(?) OR lower(from_agent) = lower(?)`
+				args = append(args, l, l)
 			}
 		}
 		if u := strings.TrimSpace(f.User); u != "" {

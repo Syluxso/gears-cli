@@ -104,13 +104,12 @@ func TestPeopleListAndAssignedDesk(t *testing.T) {
 	for _, it := range call("desk_list", nil, false)["items"].([]any) {
 		seen[it.(map[string]any)["id"].(string)] = true
 	}
-	for _, it := range []map[string]any{forMe, toMyOther, anyone} {
+	// GRS-48: what this agent sent is on its desk too (it made them), the
+	// items for bob included; bob's own never reach this cache.
+	for _, it := range []map[string]any{forMe, toMyOther, anyone, forBob, toBobAgent} {
 		if !seen[it["id"].(string)] {
 			t.Fatalf("desk_list misses %v: %v", it["text"], seen)
 		}
-	}
-	if seen[forBob["id"].(string)] || seen[toBobAgent["id"].(string)] {
-		t.Fatalf("desk_list shows bob's items: %v", seen)
 	}
 
 	// Offline: the cached list, stale.

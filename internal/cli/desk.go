@@ -150,7 +150,7 @@ func init() {
 	var clearAll bool
 	clear := &cobra.Command{
 		Use:   "clear",
-		Short: "Close open items of every type, handoffs included (--mine by default, --all for the workspace)",
+		Short: "Close open items of every type, handoffs included (--mine by default, --all for every item you can see)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := ctx()
@@ -168,7 +168,7 @@ func init() {
 			return err
 		},
 	}
-	clear.Flags().BoolVar(&clearAll, "all", false, "every open item in the workspace, for everyone")
+	clear.Flags().BoolVar(&clearAll, "all", false, "every open item you can see (the desk only holds yours and those for anyone)")
 	clear.Flags().Bool("mine", true, "only items addressed to you (the default)")
 
 	deskCmd.AddCommand(deskListCmd, deskSendCmd, read, answer, done, dismiss, clear)

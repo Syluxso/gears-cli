@@ -43,6 +43,9 @@ type fakeAPI struct {
 	refusePrefix  string
 	strictContent bool
 	artifactRows  map[string]bool
+
+	// deskVisible answers pulls as an API with desk privacy (GRS-48).
+	deskVisible bool
 }
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -112,6 +115,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			out.Changes = []api.Change{}
 		}
 		out.Cursor = int64(len(f.pending))
+		if f.deskVisible {
+			out.Desk = "visible"
+		}
 		f.pending = nil
 		_ = json.NewEncoder(w).Encode(out)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects":

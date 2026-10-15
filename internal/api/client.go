@@ -462,6 +462,9 @@ type PullOut struct {
 	// Tables echoes a pull's table filter (GRS-51). Asked for tables and
 	// got none back: the API predates the filter and sent everything.
 	Tables []string `json:"tables,omitempty"`
+	// Desk is "visible" from an API with desk privacy (GRS-48): desk items
+	// the caller cannot see come down as deletes.
+	Desk string `json:"desk,omitempty"`
 }
 
 func (c *Client) Pull(ctx context.Context, workspaceID string, cursor int64) (*PullOut, error) {
