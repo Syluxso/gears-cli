@@ -90,7 +90,7 @@ and changes nothing.`,
 		fmt.Printf(`
 Migration done. %[1]s/ is kept: to go back, delete .gears and rename
 %[1]s to .gears. %[2]s is an archive of it: store it or delete it.
-Next: gears login, then gears sync.
+gears init already ran as part of migrate. Next: gears login, then gears sync.
 `, migrate.OldDir, migrate.ZipFile)
 		return nil
 	},
