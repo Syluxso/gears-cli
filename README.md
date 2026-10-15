@@ -29,6 +29,35 @@ to change it; their JSON (and the MCP tools) carry
 `agent: {label, source, sourceText, howToChange}` with source `flag`, `env`,
 `login` or `default`.
 
+Upgrading from gears v2 (GRS-32): uninstall the old `gears`, install this one,
+then at the old workspace root:
+
+    gears migrate --dry-run      # print the plan, change nothing
+    gears migrate                # or: gears migrate <dir>
+
+It renames `.gears` to `.gears_v2` (kept, for restoring), writes
+`.gears_v2.zip` (an archive of it: store it or delete it), runs `gears init`
+(and `gears projects scan` when `projects/` exists), and copies each v2
+markdown file into `.gears/artifacts/` as `<prefix>--migrated--<name>.md`,
+body kept, with `title`, `date`, `status` (adr, story) and `migrated_from`
+added to its front matter:
+
+| v2 file                                        | v3 prefix |
+|------------------------------------------------|-----------|
+| `artifacts/adr--*.md`, `artifacts/adr_*.md`, `decisions/*.md` | `adr` |
+| `story/story--*.md`, `story/*.md`              | `story`   |
+| `*/idea--*.md`                                 | `idea`    |
+| every `index.md` (name: its folder, root is `workspace`) | `index` |
+| anything else (`sessions/*.md`, `memory/**`, `artifacts/notes.md`, ...) | `free` |
+
+Not migrated, left in `.gears_v2`: `.gearbox/` (config, `gears.db`,
+hydrate.md), v2's `README.md` and `gears-init.md`, `adr_template.md`, the
+shipped `adr_example-*.md`, `sessions/hydrate-report-*.md`, and non-markdown
+files. Name clashes get `-2`, `-3`. Re-running is safe: names already in
+`.gears/artifacts/` are kept and counted. It refuses inside a v3 workspace,
+where there is no v2 `.gears`, or in a v3 workspace without `.gears_v2`.
+Then: `gears login`, `gears sync`.
+
 Account and sync (slice 1):
 
     gears login --email you@example.com      # device token to ~/.gears/credentials.json,
