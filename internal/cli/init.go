@@ -19,19 +19,27 @@ var (
 
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Bind this directory to a workspace (or a standalone clone)",
-	Long: `Bind the current directory.
+	Short: "Create a Gears workspace in this directory",
+	Long: `Create a Gears workspace in the current directory.
 
 Writes .gears/project.yaml, creates .gears/artifacts/, adds .gears/ to
 .gitignore, and writes a short Gears block into AGENTS.md. No skeleton
-tree. Safe to run again: existing files are left alone.
+tree. Safe to run again at the root: existing files are left alone.
 
 At a workspace root (a directory with projects/), init also scans
 projects/*/ for git repos and records them in .gears/projects.yaml, the same
-as gears projects scan. The workspace root is the only .gears: init inside a
-directory that is already under a binding is refused. A standalone clone
-with no workspace above it still binds on its own, by git remote, at the
-next gears login or sync.`,
+as gears projects scan.
+
+Workspace rules:
+  - One .gears per workspace, at its root. Run init in a directory with no
+    .gears above it, and that directory becomes the workspace root.
+  - init anywhere inside an existing workspace (any .gears above) is
+    refused and names the root. No .gears is ever created below it.
+  - Every other command run anywhere under the workspace walks up to the
+    root's .gears and works there; outside any workspace it says so.
+  - A nested .gears left over from an older version or another machine is
+    ignored: the outermost one wins, and commands print one warning naming
+    the stray so you can delete it.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dir, err := os.Getwd()

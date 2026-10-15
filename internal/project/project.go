@@ -5,10 +5,12 @@ package project
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -110,40 +112,73 @@ func (p *Project) Save() error {
 }
 
 // ErrNotBound is returned when no .gears/project.yaml is found walking up.
-var ErrNotBound = errors.New("no Gears project here; run: gears init")
+var ErrNotBound = errors.New("not a Gears workspace (no .gears here or above); run gears init at your workspace root")
 
-// Find walks up from start looking for .gears/project.yaml.
+// Warnings is where Find reports a stray nested binding. Tests swap it.
+var Warnings io.Writer = os.Stderr
+
+// warned keeps the stray warning to one line per directory per process.
+var warned sync.Map
+
+// Find walks up from start to the workspace root: the outermost directory
+// holding .gears/project.yaml. A binding found below another one is a stray
+// (made before GRS-40, or on another machine); it is never used, and Find
+// names it once on Warnings so it can be deleted.
 func Find(start string) (*Project, error) {
-	dir := start
+	dir, err := filepath.Abs(start)
+	if err != nil {
+		dir = start
+	}
+	var found []string // innermost first
 	for {
-		path := filepath.Join(dir, Dir, BindingFile)
-		if data, err := os.ReadFile(path); err == nil {
-			var p Project
-			if err := yaml.Unmarshal(data, &p); err != nil {
-				return nil, fmt.Errorf("%s: %w", path, err)
-			}
-			p.Root = dir
-			// Bindings written before ids or prefixes existed get them now, once.
-			changed := false
-			if p.ID == "" {
-				p.ID, changed = NewID(), true
-			}
-			if p.Prefix == "" {
-				p.Prefix, changed = DerivePrefix(p.Slug), true
-			}
-			if changed {
-				if out, err := yaml.Marshal(&p); err == nil {
-					_ = os.WriteFile(path, out, 0o644)
-				}
-			}
-			return &p, nil
+		if st, err := os.Stat(filepath.Join(dir, Dir, BindingFile)); err == nil && !st.IsDir() {
+			found = append(found, dir)
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return nil, ErrNotBound
+			break
 		}
 		dir = parent
 	}
+	if len(found) == 0 {
+		return nil, ErrNotBound
+	}
+	root := found[len(found)-1]
+	for _, stray := range found[:len(found)-1] {
+		if _, dup := warned.LoadOrStore(stray, true); !dup && Warnings != nil {
+			fmt.Fprintf(Warnings, "warning: ignoring nested %s (the workspace root is %s); delete it: only the workspace root has a .gears\n",
+				filepath.Join(stray, Dir), root)
+		}
+	}
+	return load(root)
+}
+
+// load reads the binding at root/.gears/project.yaml.
+func load(dir string) (*Project, error) {
+	path := filepath.Join(dir, Dir, BindingFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var p Project
+	if err := yaml.Unmarshal(data, &p); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	p.Root = dir
+	// Bindings written before ids or prefixes existed get them now, once.
+	changed := false
+	if p.ID == "" {
+		p.ID, changed = NewID(), true
+	}
+	if p.Prefix == "" {
+		p.Prefix, changed = DerivePrefix(p.Slug), true
+	}
+	if changed {
+		if out, err := yaml.Marshal(&p); err == nil {
+			_ = os.WriteFile(path, out, 0o644)
+		}
+	}
+	return &p, nil
 }
 
 // UnderBindingError is Init refusing to bind a directory that already sits
@@ -229,13 +264,13 @@ func Init(dir, slug, prefix string) (*InitResult, error) {
 	gears := filepath.Join(dir, Dir)
 	bindingPath := filepath.Join(gears, BindingFile)
 
-	// No .gears below a binding, ever (GRS-40): a repo inside a workspace is
-	// a project in the root's manifest, not a binding of its own.
-	if _, err := os.Stat(bindingPath); err != nil {
-		if parent := filepath.Dir(dir); parent != dir {
-			if anc, err := Find(parent); err == nil {
-				return nil, &UnderBindingError{Dir: dir, Root: anc.Root, Workspace: anc.IsWorkspace()}
-			}
+	// No .gears below a binding, ever (GRS-40, GRS-33): a repo inside a
+	// workspace is a project in the root's manifest, not a binding of its
+	// own. A stray binding already here is refused too: the root wins.
+	// With nothing above, init creates the workspace here.
+	if parent := filepath.Dir(dir); parent != dir {
+		if anc, err := Find(parent); err == nil {
+			return nil, &UnderBindingError{Dir: dir, Root: anc.Root, Workspace: anc.IsWorkspace()}
 		}
 	}
 

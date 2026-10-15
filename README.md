@@ -15,7 +15,10 @@ under `projects/` in `.gears/projects.yaml` (`gears projects scan` to refresh,
 `gears projects list` to print). Commands run inside `projects/<repo>` resolve
 to the root and tag session entries and new artifacts with that project;
 `gears init` there is refused. A standalone clone with no workspace above it
-still runs `gears init` on its own. For an MCP harness, point it at
+still runs `gears init` on its own: `gears init` in a directory with no `.gears`
+above it is how a workspace is created. Outside any workspace, other commands
+say "not a Gears workspace". A nested `.gears` left from an older version is
+ignored (the outermost wins) with one warning naming it, so it can be deleted. For an MCP harness, point it at
 `gears run --dir <workspace root>` with `GEARS_AGENT` set to the agent's label.
 
 The agent label (GRS-21) comes from, strongest first: `gears -a <name>`, then
