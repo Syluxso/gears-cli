@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/Syluxso/gears-cli/internal/api"
 	"github.com/Syluxso/gears-cli/internal/artifact"
 	"github.com/Syluxso/gears-cli/internal/verbs"
 )
@@ -34,6 +35,11 @@ The text is a glance: each section is one header line with its count and at
 most three lines, each cut to the terminal width, with the command that
 shows the rest. --full prints every item. --json (and the MCP status tool)
 always carry the full data.
+
+When gears-api can say (logged in, online), a "connected" line names who
+holds the workspace's live board right now (GRS-37): "connected  2
+(darryn: browser, claude-local: gears run auto-sync 5m)". --full lists each
+connection with its device and since; --json carries presence.
 
 Last comes the workspace's architecture doc, arch--primary.md (GRS-41),
 in full: the glance stops after 60 lines and points at gears arch, --full
@@ -123,6 +129,9 @@ func printStatusBrief(w io.Writer, out *verbs.StatusOut, width int, colour bool)
 	line(fmt.Sprintf("%-9s %s  %s  (cards %s-n)", bindingLabel(out), out.Project, out.ProjectID, out.Prefix))
 	line(fmt.Sprintf("agent     %s  (from %s)", out.Agent.Label, agentSourceShort(out.Agent.Source)))
 	line("  change: gears -a <name> | GEARS_AGENT=<name> (.mcp.json env for MCP) | gears login --label <name>")
+	if out.Presence != nil {
+		head("connected", " "+presenceGlance(out.Presence))
+	}
 
 	fmt.Fprintln(w)
 	head("projects", projectsHeader(out))
@@ -356,6 +365,10 @@ func printStatusFull(out *verbs.StatusOut) {
 		fmt.Printf("  %s  %-9s %-8s %s\n", hhmm(e.At), e.Agent, e.Kind, e.Text)
 	}
 
+	if out.Presence != nil {
+		printPresenceFull(os.Stdout, out.Presence)
+	}
+
 	fmt.Printf("\nnext      %s\n", out.NextAction)
 
 	fmt.Println()
@@ -533,4 +546,72 @@ func printAgent(w io.Writer, a verbs.AgentInfo) {
 	for _, h := range a.HowToChange {
 		fmt.Fprintln(w, "    "+h)
 	}
+}
+
+// presenceWho names one board-stream connection (GRS-37): its agent label
+// when it said one, else the person (first name, else the email's local
+// part, else the user id).
+func presenceWho(p api.PresenceConn) string {
+	if p.Label != "" {
+		return p.Label
+	}
+	if f := strings.Fields(p.Name); len(f) > 0 {
+		return strings.ToLower(f[0])
+	}
+	if at := strings.Index(p.Email, "@"); at > 0 {
+		return p.Email[:at]
+	}
+	if p.UserID != "" {
+		return p.UserID
+	}
+	return "someone"
+}
+
+// presenceWhat is what the connection is: a browser, gears run with its
+// auto-sync, or a CLI holding the stream (gears run or watch).
+func presenceWhat(p api.PresenceConn) string {
+	switch {
+	case p.AuthMethod != "device":
+		return "browser"
+	case p.SyncIntervalMinutes > 0:
+		return fmt.Sprintf("gears run auto-sync %dm", p.SyncIntervalMinutes)
+	}
+	return "gears cli"
+}
+
+// presenceGlance is the glance's presence line after "connected".
+func presenceGlance(p *api.Presence) string {
+	if p.Count == 0 {
+		return "0"
+	}
+	parts := make([]string, 0, len(p.Connections))
+	for _, c := range p.Connections {
+		parts = append(parts, presenceWho(c)+": "+presenceWhat(c))
+	}
+	return fmt.Sprintf("%d (%s)", p.Count, strings.Join(parts, ", "))
+}
+
+// printPresenceFull lists every connection: who, what, device, since.
+func printPresenceFull(w io.Writer, p *api.Presence) {
+	fmt.Fprintf(w, "\nconnected %d on the live board\n", p.Count)
+	for _, c := range p.Connections {
+		s := fmt.Sprintf("  %-14s %-24s", presenceWho(c), presenceWhat(c))
+		if c.DeviceLabel != "" {
+			s += "  device " + c.DeviceLabel
+		}
+		if !c.ConnectedAt.IsZero() {
+			s += "  since " + c.ConnectedAt.Local().Format("Jan 2 15:04")
+		}
+		if person := strings.TrimSpace(c.Name + " " + angle(c.Email)); person != "" {
+			s += "  " + person
+		}
+		fmt.Fprintln(w, strings.TrimRight(s, " "))
+	}
+}
+
+func angle(s string) string {
+	if s == "" {
+		return ""
+	}
+	return "<" + s + ">"
 }

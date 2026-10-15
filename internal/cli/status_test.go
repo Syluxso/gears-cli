@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Syluxso/gears-cli/internal/api"
 	"github.com/Syluxso/gears-cli/internal/project"
 	"github.com/Syluxso/gears-cli/internal/verbs"
 )
@@ -136,5 +137,53 @@ func TestStatusAgentLines(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("agent block lacks %q:\n%s", want, got)
 		}
+	}
+}
+
+// GRS-37: presence on the glance is one line, who and what; --full lists
+// each connection with its device and since.
+func TestStatusPresenceLines(t *testing.T) {
+	out := bigStatus()
+	at := time.Date(2026, 10, 15, 7, 12, 0, 0, time.UTC)
+	out.Presence = &api.Presence{Count: 3, Connections: []api.PresenceConn{
+		{UserID: "u1", Name: "Darryn Smith", Email: "d@example.test", AuthMethod: "iam", ConnectedAt: at},
+		{UserID: "u1", Label: "claude-local", DeviceLabel: "claude-code+local", AuthMethod: "device", SyncIntervalMinutes: 5, ConnectedAt: at},
+		{UserID: "u2", Email: "grok@example.test", AuthMethod: "device", DeviceLabel: "grok+ubuntu", ConnectedAt: at},
+	}}
+	var b bytes.Buffer
+	printStatusBrief(&b, out, 200, false)
+	want := "connected  3 (darryn: browser, claude-local: gears run auto-sync 5m, grok: gears cli)"
+	if !strings.Contains(b.String(), want+"\n") {
+		t.Fatalf("glance lacks %q:\n%s", want, b.String())
+	}
+	b.Reset()
+	printPresenceFull(&b, out.Presence)
+	got := b.String()
+	for _, s := range []string{"connected 3 on the live board", "claude-local", "gears run auto-sync 5m", "device claude-code+local", "since ", "Darryn Smith <d@example.test>"} {
+		if !strings.Contains(got, s) {
+			t.Fatalf("full lacks %q:\n%s", s, got)
+		}
+	}
+	// No presence (offline, older API): no line at all.
+	out.Presence = nil
+	b.Reset()
+	printStatusBrief(&b, out, 200, false)
+	if strings.Contains(b.String(), "connected") {
+		t.Fatalf("presence line without presence:\n%s", b.String())
+	}
+	// Nobody connected.
+	if s := presenceGlance(&api.Presence{Connections: []api.PresenceConn{}}); s != "0" {
+		t.Fatalf("empty: %q", s)
+	}
+}
+
+// gears run says its agent label and interval on the stream; the label
+// falls back as session entries do.
+func TestStreamHello(t *testing.T) {
+	if h := streamHello(verbs.Ctx{Agent: "claude-local"}, 5); h.Label != "claude-local" || h.SyncMinutes != 5 {
+		t.Fatalf("hello: %+v", h)
+	}
+	if h := streamHello(verbs.Ctx{}, -1); h.Label == "" || h.SyncMinutes != 0 {
+		t.Fatalf("default hello: %+v", h)
 	}
 }

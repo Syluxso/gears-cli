@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,11 +64,21 @@ type Server struct {
 	Pushes  int
 	Pulls   []string // raw query of each pull
 	Streams int      // stream connections opened
+
+	// Presence (GRS-37): each open stream is a connection, as the device
+	// "tester" with the stream's X-Gears-Label and X-Gears-Sync-Interval.
+	// Others are connections that are not streams here (a browser), listed
+	// first. PresenceStatus, when set, answers GET presence with it (404:
+	// an API from before GRS-37).
+	Others         []api.PresenceConn
+	PresenceStatus int
+	open           map[chan string]api.PresenceConn
+	Hellos         []http.Header // the headers of every stream request
 }
 
 func New(prefix string) *Server {
 	s := &Server{Prefix: prefix, rows: map[string]map[string]json.RawMessage{}, numbers: map[string]int{}, used: map[int]bool{},
-		subs: map[chan string]struct{}{}}
+		subs: map[chan string]struct{}{}, open: map[chan string]api.PresenceConn{}}
 	at := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	for i, n := range card.DefaultStates {
 		st := api.BoardState{ID: project.NewID(), Name: n, Position: i, IsDefault: i == 0, IsTerminal: i == len(card.DefaultStates)-1, CreatedAt: at, UpdatedAt: at}
@@ -186,6 +197,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/board/events"):
 		s.stream(w, r)
+	case r.Method == http.MethodGet && strings.HasSuffix(path, "/presence"):
+		s.presence(w)
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/board"):
 		s.mu.Lock()
 		b := api.Board{Prefix: s.Prefix, States: s.states}
@@ -204,6 +217,37 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// presence answers GET presence: Others, then each open stream, oldest first.
+func (s *Server) presence(w http.ResponseWriter) {
+	s.mu.Lock()
+	status := s.PresenceStatus
+	conns := append([]api.PresenceConn{}, s.Others...)
+	var streams []api.PresenceConn
+	for _, p := range s.open {
+		streams = append(streams, p)
+	}
+	s.mu.Unlock()
+	if status != 0 {
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(status)
+		_, _ = fmt.Fprintf(w, `{"status":%d,"code":"gears.not_found","detail":"not found"}`, status)
+		return
+	}
+	sort.Slice(streams, func(i, j int) bool { return streams[i].ConnectedAt.Before(streams[j].ConnectedAt) })
+	conns = append(conns, streams...)
+	_ = json.NewEncoder(w).Encode(api.Presence{Count: len(conns), Connections: conns})
+}
+
+// Hello is the headers of the last stream request.
+func (s *Server) Hello() http.Header {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.Hellos) == 0 {
+		return http.Header{}
+	}
+	return s.Hellos[len(s.Hellos)-1]
+}
+
 func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	status := s.StreamStatus
@@ -218,12 +262,21 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	ch := make(chan string, 64)
+	label := r.Header.Get("X-Gears-Label")
+	if label == "" {
+		label = "tester"
+	}
+	every, _ := strconv.Atoi(r.Header.Get("X-Gears-Sync-Interval"))
 	s.mu.Lock()
 	s.subs[ch] = struct{}{}
+	s.Hellos = append(s.Hellos, r.Header.Clone())
+	s.open[ch] = api.PresenceConn{UserID: "tester@example.test", Email: "tester@example.test", Label: label, DeviceID: "dev-tester",
+		DeviceLabel: "tester", AuthMethod: "device", SyncIntervalMinutes: every, ConnectedAt: time.Now().UTC()}
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
 		delete(s.subs, ch)
+		delete(s.open, ch)
 		s.mu.Unlock()
 	}()
 	_, _ = io.WriteString(w, ": subscribed\n\n")

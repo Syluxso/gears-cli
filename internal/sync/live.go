@@ -536,6 +536,9 @@ type LiveOptions struct {
 	Idle time.Duration
 	// PullTimeout bounds one pull (default 20s).
 	PullTimeout time.Duration
+	// Hello says who holds the stream (GRS-37 presence): the agent label
+	// and gears run's auto-sync interval.
+	Hello api.StreamHello
 }
 
 // Live holds the board stream open until ctx ends, pulling the card tables
@@ -603,7 +606,7 @@ var errIdle = errors.New("stream idle")
 func liveSession(ctx context.Context, o LiveOptions, ws string) (connected bool, err error) {
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	body, err := o.Client.BoardEvents(sctx, ws)
+	body, err := o.Client.BoardEventsAs(sctx, ws, o.Hello)
 	if err != nil {
 		return false, err
 	}

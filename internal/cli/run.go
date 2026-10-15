@@ -72,11 +72,11 @@ Set GEARS_AGENT in the harness env so tools act as that agent.`,
 		ctx, cancel := context.WithCancel(sigCtx)
 		defer cancel()
 		fmt.Fprintf(os.Stderr, "gears mcp: project %s, agent %s, %s\n", c.Project.Slug, c.Agent, c.Project.Root)
-		go liveBoard(ctx, c, nil)
 		every, err := syncInterval(cmd.Flags().Changed("sync-interval"), runSyncInterval, os.Getenv("GEARS_SYNC_INTERVAL"))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "gears sync: %s; periodic sync off\n", err)
 		}
+		go liveBoard(ctx, c, nil, int(every/time.Minute))
 		if every > 0 {
 			fmt.Fprintf(os.Stderr, "gears sync: every %d min\n", int(every/time.Minute))
 			go periodicSync(ctx, c, every)
@@ -90,7 +90,11 @@ Set GEARS_AGENT in the harness env so tools act as that agent.`,
 // It never fails its caller: no login, no binding, an API without the live
 // board are each one line on stderr, and cards still sync on every write
 // and read. onChange receives applied changes (gears watch prints them).
-func liveBoard(ctx context.Context, c verbs.Ctx, onChange func(sync.CardChange)) error {
+//
+// The stream is presence (GRS-37): it carries the agent label and
+// syncMinutes, gears run's auto-sync interval (0: none), so the workspace
+// can show "claude-local: gears run auto-sync 5m".
+func liveBoard(ctx context.Context, c verbs.Ctx, onChange func(sync.CardChange), syncMinutes int) error {
 	logf := func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, "gears live: "+format+"\n", args...)
 	}
@@ -108,7 +112,18 @@ func liveBoard(ctx context.Context, c verbs.Ctx, onChange func(sync.CardChange))
 		logf("cards have not synced here yet; run gears sync once, then the board stays live")
 		return sync.ErrCardsNotReady
 	}
-	return sync.Live(ctx, sync.LiveOptions{Client: cl, Project: c.Project, Logf: logf, OnChange: onChange})
+	return sync.Live(ctx, sync.LiveOptions{Client: cl, Project: c.Project, Logf: logf, OnChange: onChange,
+		Hello: streamHello(c, syncMinutes)})
+}
+
+// streamHello is who gears run (or watch) says holds the board stream: its
+// agent label, as session entries name it, and the auto-sync interval.
+func streamHello(c verbs.Ctx, syncMinutes int) api.StreamHello {
+	agent := c.Agent
+	if agent == "" {
+		agent = session.DefaultAgent()
+	}
+	return api.StreamHello{Label: agent, SyncMinutes: max(syncMinutes, 0)}
 }
 
 var errLiveOff = errors.New("card sync is off (GEARS_CARD_SYNC)")

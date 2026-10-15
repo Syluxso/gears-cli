@@ -230,3 +230,24 @@ func overview(sp *StatusProject, f project.Found) {
 		sp.Remote = remote
 	}
 }
+
+// apiPresence asks gears-api who holds the workspace's board stream right
+// now (GRS-37). nil when it cannot say: not logged in, offline, or an API
+// from before presence (404); status then shows no presence line. A var
+// so tests can stand in for the API.
+var apiPresence = func(ws string) *api.Presence {
+	if ws == "" {
+		return nil
+	}
+	cl, err := api.Open(api.Host())
+	if err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
+	defer cancel()
+	p, err := cl.Presence(ctx, ws)
+	if err != nil {
+		return nil
+	}
+	return p
+}

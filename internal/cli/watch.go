@@ -40,7 +40,7 @@ Needs gears login and one gears sync.`,
 				return
 			}
 			fmt.Println(ch.String())
-		})
+		}, 0)
 		if ctx.Err() != nil {
 			return nil
 		}

@@ -381,6 +381,38 @@ func (c *Client) ListProjects(ctx context.Context, ws string) ([]Project, error)
 	return out, err
 }
 
+// PresenceConn is one open board stream (GRS-37).
+type PresenceConn struct {
+	UserID              string    `json:"userId"`
+	Name                string    `json:"name,omitempty"`
+	Email               string    `json:"email,omitempty"`
+	Label               string    `json:"label,omitempty"`
+	DeviceID            string    `json:"deviceId,omitempty"`
+	DeviceLabel         string    `json:"deviceLabel,omitempty"`
+	AuthMethod          string    `json:"authMethod,omitempty"`
+	SyncIntervalMinutes int       `json:"syncIntervalMinutes,omitempty"`
+	ConnectedAt         time.Time `json:"connectedAt"`
+}
+
+// Presence is GET /workspaces/:ws/presence: who holds the board stream now.
+type Presence struct {
+	Count       int            `json:"count"`
+	Connections []PresenceConn `json:"connections"`
+}
+
+// Presence asks who holds the workspace's board stream right now. An API
+// from before GRS-37 answers 404 (a *Problem).
+func (c *Client) Presence(ctx context.Context, ws string) (*Presence, error) {
+	var out Presence
+	if _, err := c.Do(ctx, http.MethodGet, "/api/v1/workspaces/"+ws+"/presence", nil, &out); err != nil {
+		return nil, err
+	}
+	if out.Connections == nil {
+		out.Connections = []PresenceConn{}
+	}
+	return &out, nil
+}
+
 // Person is one person of a workspace (GRS-36): a member, with the agent
 // labels their devices use.
 type Person struct {
@@ -478,12 +510,31 @@ func (e *StreamError) Permanent() bool {
 // it; cancelling ctx ends the stream. No client timeout: the stream is
 // long-lived and the server pings every 25s.
 func (c *Client) BoardEvents(ctx context.Context, workspaceID string) (io.ReadCloser, error) {
+	return c.BoardEventsAs(ctx, workspaceID, StreamHello{})
+}
+
+// StreamHello is who holds a board stream, for presence (GRS-37): the
+// agent label (X-Gears-Label, over the device's login label) and gears
+// run's auto-sync interval in minutes (X-Gears-Sync-Interval; 0 sends none).
+type StreamHello struct {
+	Label       string
+	SyncMinutes int
+}
+
+// BoardEventsAs is BoardEvents saying who is holding the stream.
+func (c *Client) BoardEventsAs(ctx context.Context, workspaceID string, hello StreamHello) (io.ReadCloser, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Host+"/api/v1/workspaces/"+workspaceID+"/board/events", nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	c.auth(req)
+	if l := strings.TrimSpace(hello.Label); l != "" {
+		req.Header.Set("X-Gears-Label", l)
+	}
+	if hello.SyncMinutes > 0 {
+		req.Header.Set("X-Gears-Sync-Interval", fmt.Sprint(hello.SyncMinutes))
+	}
 	resp, err := streamClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%s unreachable: %w", c.Host, err)

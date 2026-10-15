@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Syluxso/gears-cli/internal/api"
 	"github.com/Syluxso/gears-cli/internal/artifact"
 	"github.com/Syluxso/gears-cli/internal/card"
 	"github.com/Syluxso/gears-cli/internal/desk"
@@ -109,6 +110,10 @@ type StatusOut struct {
 	// Arch is the workspace's architecture artifact in full (GRS-41),
 	// always carried so an agent never has to go looking for it.
 	Arch ArchOut `json:"arch"`
+	// Presence is who holds the workspace's board stream right now
+	// (GRS-37): browsers, gears run (with its auto-sync interval). Absent
+	// when the API cannot say (offline, not logged in, before presence).
+	Presence *api.Presence `json:"presence,omitempty"`
 }
 
 // ArchOut is the workspace's master architecture doc: arch--primary.md,
@@ -217,6 +222,8 @@ func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 	// alongside the desk, runs and git work.
 	down := make(chan bool, 1) // buffered: an early return never strands it
 	go func() { down <- c.cardsDown() }()
+	pres := make(chan *api.Presence, 1)
+	go func() { pres <- apiPresence(c.Project.WorkspaceID()) }()
 
 	items, err := desk.List(c.Project, mine(c, out.Agent.Label))
 	if err != nil {
@@ -305,6 +312,7 @@ func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 		return nil, r.err
 	}
 	out.Projects, out.API = r.projects, r.api
+	out.Presence = <-pres
 
 	switch {
 	case len(out.Runs) > 0 && out.Runs[0].Current != nil:
