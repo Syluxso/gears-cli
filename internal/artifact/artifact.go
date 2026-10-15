@@ -24,7 +24,30 @@ import (
 
 // Prefixes in display order. "shape" files live beside these but are schemas,
 // not artifacts, so they are not listed.
-var Prefixes = []string{"adr", "story", "idea", "index", "free", "runbook"}
+var Prefixes = []string{"arch", "adr", "story", "idea", "index", "free", "runbook"}
+
+// ArchFile is the workspace's one architecture artifact (GRS-41): the master
+// design doc gears status always shows in full. Free-form for now (its shape
+// requires nothing); a second arch artifact is refused.
+const ArchFile = "arch--primary.md"
+
+// archSlug is the only slug an arch artifact takes.
+const archSlug = "primary"
+
+// ArchStub is the body gears init and gears arch init write: a title and the
+// suggested sections as plain headings, none of them required.
+func ArchStub(title string) string {
+	if strings.TrimSpace(title) == "" {
+		title = "Architecture"
+	}
+	fm := title
+	if strings.ContainsAny(fm, ":#'\"\n") {
+		fm = fmt.Sprintf("%q", fm)
+	}
+	return "---\ntitle: " + fm + "\n---\n\n# " + title + "\n\n" +
+		"The master design doc for this workspace: gears status always shows it in full. Edit it with gears arch edit.\n\n" +
+		"## Context\n\n\n## Boundaries\n\n\n## Current Shape\n\n\n## Open Questions\n\n"
+}
 
 // Ext is the file extension per prefix. Runbooks are YAML definitions; the
 // rest are markdown with front matter.
@@ -112,7 +135,20 @@ func NewFor(p *project.Project, projectID, prefix, title, agent string) (*Artifa
 	if prefix == "runbook" {
 		return nil, fmt.Errorf("runbooks are authored with: gears runbook new %q", title)
 	}
+	if prefix == "arch" {
+		// One per workspace, always arch--primary.md, always workspace-level.
+		if err := archTaken(p); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(title) == "" {
+			title = "Architecture"
+		}
+		projectID = DefaultProject(p)
+	}
 	slug := project.Slugify(title)
+	if prefix == "arch" {
+		slug = archSlug
+	}
 	if slug == "" {
 		return nil, fmt.Errorf("title %q produces an empty slug", title)
 	}
@@ -155,6 +191,9 @@ func NewFor(p *project.Project, projectID, prefix, title, agent string) (*Artifa
 		wanted[k] = front[k]
 	}
 	body := s.Seed(wanted)
+	if prefix == "arch" {
+		body = ArchStub(title)
+	}
 	status := ""
 	if containsKey(s.FrontMatter, "status") {
 		status = "draft"
@@ -453,7 +492,9 @@ func Reconcile(p *project.Project) ([]Change, error) {
 			// Regenerate from the shape seed and what the row knows.
 			s := set[a.Prefix]
 			body := ""
-			if s != nil && a.Prefix != "runbook" {
+			if a.Prefix == "arch" {
+				body = ArchStub(a.Title)
+			} else if s != nil && a.Prefix != "runbook" {
 				front := map[string]string{"title": a.Title, "status": a.Status, "date": a.CreatedAt.Format("2006-01-02")}
 				wanted := map[string]string{}
 				for _, k := range s.FrontMatter {
@@ -570,6 +611,56 @@ func validate(set shape.Set, prefix, body string) []string {
 		return []string{err.Error()}
 	}
 	return s.Validate(doc)
+}
+
+// archTaken refuses a second arch artifact: there is one per workspace.
+func archTaken(p *project.Project) error {
+	list, err := List(p)
+	if err != nil {
+		return err
+	}
+	for _, a := range list {
+		if a.Prefix == "arch" {
+			return fmt.Errorf("this workspace already has its architecture artifact (%s); there is one per workspace: edit it with gears arch edit", a.File)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(p.ArtifactsDir(), ArchFile)); err == nil {
+		return fmt.Errorf("%s already exists; there is one per workspace: edit it with gears arch edit", ArchFile)
+	}
+	return nil
+}
+
+// InitArch writes the stub arch--primary.md unless the workspace already has
+// an arch artifact. It never overwrites: created is false when one exists.
+func InitArch(p *project.Project, agent string) (a *Artifact, created bool, err error) {
+	list, err := List(p)
+	if err != nil {
+		return nil, false, err
+	}
+	for i := range list {
+		if list[i].Prefix == "arch" {
+			return &list[i], false, nil
+		}
+	}
+	a, err = NewFor(p, "", "arch", "Architecture", agent)
+	if err != nil {
+		return nil, false, err
+	}
+	return a, true, nil
+}
+
+// Arch reads the workspace's architecture artifact, arch--primary.md. ok is
+// false when there is none.
+func Arch(p *project.Project) (path, body string, ok bool, err error) {
+	path = filepath.Join(p.ArtifactsDir(), ArchFile)
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return path, "", false, nil
+	}
+	if err != nil {
+		return path, "", false, err
+	}
+	return path, strings.ReplaceAll(string(data), "\r\n", "\n"), true, nil
 }
 
 func nextADRNumber(p *project.Project) (int, error) {

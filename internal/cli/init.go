@@ -7,7 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Syluxso/gears-cli/internal/artifact"
 	"github.com/Syluxso/gears-cli/internal/project"
+	"github.com/Syluxso/gears-cli/internal/session"
 	"github.com/Syluxso/gears-cli/internal/verbs"
 )
 
@@ -24,7 +26,10 @@ var initCmd = &cobra.Command{
 
 Writes .gears/project.yaml, creates .gears/artifacts/, adds .gears/ to
 .gitignore, and writes a short Gears block into AGENTS.md. No skeleton
-tree. Safe to run again at the root: existing files are left alone.
+tree. At a workspace root it also writes a stub architecture doc,
+.gears/artifacts/arch--primary.md (the master design doc gears status
+always shows in full). Safe to run again at the root: existing files,
+the architecture doc included, are left alone.
 
 At a workspace root (a directory with projects/), init also scans
 projects/*/ for git repos and records them in .gears/projects.yaml, the same
@@ -54,7 +59,22 @@ Workspace rules:
 			fmt.Println(" ", line)
 		}
 		p := res.Project
-		if p.IsWorkspace() && (dirExists(filepath.Join(dir, project.ProjectsDir)) || p.HasManifest()) {
+		if p.IsWorkspace() {
+			// The workspace's architecture doc (GRS-41): a stub once, never
+			// overwritten on a re-run.
+			agent, _ := session.ResolveAgent(globalAgent)
+			a, created, err := artifact.InitArch(p, agent)
+			if err != nil {
+				return err
+			}
+			rel, _ := filepath.Rel(dir, a.Path)
+			if created {
+				fmt.Println("  wrote  ", filepath.ToSlash(rel), "(architecture stub: fill it in; gears status always shows it)")
+			} else {
+				fmt.Println("  kept   ", filepath.ToSlash(rel))
+			}
+		}
+		if p.IsWorkspace() &&(dirExists(filepath.Join(dir, project.ProjectsDir)) || p.HasManifest()) {
 			agent := globalAgent
 			out, err := verbs.ProjectsScan(verbs.Ctx{Project: p, Agent: agent}, verbs.ProjectsScanIn{Offline: initOffline})
 			if err != nil {

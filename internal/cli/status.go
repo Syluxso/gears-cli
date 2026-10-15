@@ -33,7 +33,12 @@ ahead/behind are as of the last fetch.
 The text is a glance: each section is one header line with its count and at
 most three lines, each cut to the terminal width, with the command that
 shows the rest. --full prints every item. --json (and the MCP status tool)
-always carry the full data.`,
+always carry the full data.
+
+Last comes the workspace's architecture doc, arch--primary.md (GRS-41),
+in full: the glance stops after 60 lines and points at gears arch, --full
+prints all of it, and --json carries arch {file, body}. A workspace without
+one is told how to make it (gears arch init); status never writes it.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c, err := ctx()
@@ -217,6 +222,35 @@ func printStatusBrief(w io.Writer, out *verbs.StatusOut, width int, colour bool)
 
 	fmt.Fprintln(w)
 	head("next", out.NextAction)
+
+	fmt.Fprintln(w)
+	printArch(w, out.Arch, archGlanceLines, st)
+}
+
+// archGlanceLines is how much of the architecture doc the glance prints
+// before pointing at gears arch. --full prints it all.
+const archGlanceLines = 60
+
+// printArch is the architecture section (GRS-41): the doc's whole body,
+// never cut to the terminal width, last in the report. limit > 0 stops
+// after that many lines and points at gears arch for the rest.
+func printArch(w io.Writer, a verbs.ArchOut, limit int, st style) {
+	if a.Missing {
+		fmt.Fprintf(w, "%s      none: gears arch init (or re-run gears init) writes %s\n", st.bold("arch"), artifact.ArchFile)
+		return
+	}
+	fmt.Fprintf(w, "%s      %s\n", st.bold("arch"), a.File)
+	lines := strings.Split(strings.TrimRight(a.Body, "\n"), "\n")
+	shown := lines
+	if limit > 0 && len(lines) > limit {
+		shown = lines[:limit]
+	}
+	for _, l := range shown {
+		fmt.Fprintln(w, l)
+	}
+	if len(shown) < len(lines) {
+		fmt.Fprintln(w, st.dim(fmt.Sprintf("… gears arch for the rest (%d more lines)", len(lines)-len(shown))))
+	}
 }
 
 // printStatusFull is the untrimmed text: every item, uncut, no colour.
@@ -323,6 +357,9 @@ func printStatusFull(out *verbs.StatusOut) {
 	}
 
 	fmt.Printf("\nnext      %s\n", out.NextAction)
+
+	fmt.Println()
+	printArch(os.Stdout, out.Arch, 0, style{})
 }
 
 // cut shortens s to width runes, ending in an ellipsis when it had to cut.

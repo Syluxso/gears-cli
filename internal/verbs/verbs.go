@@ -106,6 +106,66 @@ type StatusOut struct {
 	Artifacts  ArtifactStats          `json:"artifacts"`
 	Session    []SessionLine          `json:"sessionToday"`
 	NextAction string                 `json:"nextAction"`
+	// Arch is the workspace's architecture artifact in full (GRS-41),
+	// always carried so an agent never has to go looking for it.
+	Arch ArchOut `json:"arch"`
+}
+
+// ArchOut is the workspace's master architecture doc: arch--primary.md,
+// free-form, one per workspace. Missing (no body) says how to create it.
+type ArchOut struct {
+	File    string `json:"file"`
+	Body    string `json:"body"`
+	Missing bool   `json:"missing,omitempty"`
+	Hint    string `json:"hint,omitempty"`
+}
+
+// archMissingHint is how to create the arch artifact in a workspace that
+// predates it. Status only says so; it never writes the file.
+const archMissingHint = "no architecture artifact yet: gears arch init (or re-run gears init at the workspace root) writes a stub " + artifact.ArchFile
+
+func archOut(c Ctx) (ArchOut, error) {
+	_, body, ok, err := artifact.Arch(c.Project)
+	if err != nil {
+		return ArchOut{}, err
+	}
+	if !ok {
+		return ArchOut{File: artifact.ArchFile, Missing: true, Hint: archMissingHint}, nil
+	}
+	return ArchOut{File: artifact.ArchFile, Body: body}, nil
+}
+
+// ArchIn has no fields: there is one architecture artifact per workspace.
+type ArchIn struct{}
+
+// Arch returns the workspace's architecture artifact in full.
+func Arch(c Ctx, _ ArchIn) (*ArchOut, error) {
+	if _, err := artifact.Reconcile(c.Project); err != nil {
+		return nil, err
+	}
+	o, err := archOut(c)
+	if err != nil {
+		return nil, err
+	}
+	return &o, nil
+}
+
+type ArchInitIn struct{}
+
+type ArchInitOut struct {
+	File    string `json:"file"`
+	Path    string `json:"path"`
+	Created bool   `json:"created"`
+}
+
+// ArchInit writes the stub arch--primary.md if the workspace has none. It
+// never overwrites one that exists.
+func ArchInit(c Ctx, _ ArchInitIn) (*ArchInitOut, error) {
+	a, created, err := artifact.InitArch(c.Project, c.agent())
+	if err != nil {
+		return nil, err
+	}
+	return &ArchInitOut{File: a.File, Path: a.Path, Created: created}, nil
 }
 
 // CardStats is the board at a glance: open cards by state, in board order,
@@ -218,11 +278,17 @@ func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 	for _, a := range arts {
 		out.Artifacts.ByPrefix[a.Prefix]++
 		switch {
+		case a.Prefix == "arch" && a.File != artifact.ArchFile:
+			// A hand-made or pulled second arch file: only the primary is shown.
+			out.Artifacts.Problems = append(out.Artifacts.Problems, a.File+": one arch per workspace; only "+artifact.ArchFile+" is shown by status")
 		case !a.FilePresent:
 			out.Artifacts.Problems = append(out.Artifacts.Problems, a.File+": file missing")
 		case !a.ShapeOK:
 			out.Artifacts.Problems = append(out.Artifacts.Problems, a.File+": "+strings.Join(a.ShapeErrors, "; "))
 		}
+	}
+	if out.Arch, err = archOut(c); err != nil {
+		return nil, err
 	}
 
 	entries, err := session.Today(c.Project)
@@ -480,7 +546,7 @@ func artifactOut(a artifact.Artifact) Artifact {
 }
 
 type ArtifactNewIn struct {
-	Prefix  string `json:"prefix" jsonschema:"adr (a decision; numbered, never rewritten) | story (a feature in the user's words) | idea | index | free. Runbooks are authored with runbook_new."`
+	Prefix  string `json:"prefix" jsonschema:"adr (a decision; numbered, never rewritten) | story (a feature in the user's words) | idea | index | free | arch (the workspace's one architecture doc, always arch--primary.md; a second is refused). Runbooks are authored with runbook_new."`
 	Title   string `json:"title" jsonschema:"Human title. The file slug is derived from it; file names are unique across the workspace."`
 	Project string `json:"project,omitempty" jsonschema:"The project this artifact belongs to: slug, id or path from projects_list. Default: the project the server runs in, else none (workspace-level)."`
 }

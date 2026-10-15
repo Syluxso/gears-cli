@@ -16,7 +16,7 @@ var (
 
 var artifactCmd = &cobra.Command{
 	Use:   "artifact",
-	Short: "Shaped files beside the code: adr, story, idea, index, free",
+	Short: "Shaped files beside the code: arch, adr, story, idea, index, free",
 	Long: `Artifacts are prefixed files in .gears/artifacts/ ruled by a row in the
 local cache. The row is created first and holds identity, tags, hash and
 shape result; the file holds the body. The two are reconciled on every

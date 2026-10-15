@@ -18,8 +18,9 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "gears", Version: version}, nil)
 
 	add(s, c, "status",
-		"Cold-start packet for the whole workspace. Run first in every session: every project (manifest, projects/ on disk, gears-api when logged in) with tech, git remote, branch, last commit, dirty count, ahead/behind and README line; open desk items for this agent, active runs, artifact counts and shape problems, today's session entries, and a suggested next action. agent {label, source (flag|env|login|default), howToChange} says who you are acting as and how to change it.",
+		"Cold-start packet for the whole workspace. Run first in every session: every project (manifest, projects/ on disk, gears-api when logged in) with tech, git remote, branch, last commit, dirty count, ahead/behind and README line; open desk items for this agent, active runs, artifact counts and shape problems, today's session entries, and a suggested next action. agent {label, source (flag|env|login|default), howToChange} says who you are acting as and how to change it. arch {file, body} is the workspace's architecture doc (arch--primary.md) in full: read it before you design anything; missing with a hint when the workspace has none.",
 		verbs.Status)
+	add(s, c, "arch", "The workspace's architecture artifact, arch--primary.md, in full: the master design doc (context, boundaries, current shape, open questions). Free-form, one per workspace; edit the file, then artifact_reconcile. status carries the same body. missing with a hint when the workspace has none (artifact_new prefix arch writes the stub).", verbs.Arch)
 
 	add(s, c, "desk_list", "Open desk items addressed to this agent or to anyone. Set all to include closed items.", verbs.DeskList)
 	add(s, c, "desk_send", "Place an item on a desk. Type is lifecycle: info closes when read; ask closes when answered; event closes when dismissed; work closes when done; handoff never closes.", verbs.DeskSend)
@@ -49,7 +50,7 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 	add(s, c, "session_new", "Append one entry to today's session log. Kinds: done, decision, problem, next. Write as the work happens. Returns the entry id (a UUID, the same on every machine) and short (its last 8 hex digits); a runbook step with check=session accepts either as evidence.", verbs.SessionNew)
 	add(s, c, "session_list", "Session entries from the last N days (default 3), oldest first, every agent folded by time.", verbs.SessionList)
 
-	add(s, c, "artifact_new", "Create an artifact: the row first, then a file seeded from its shape. Prefixes: adr (numbered, never rewritten), story, idea, index, free. The new file fails its shape until its sections are filled; fill it, then artifact_validate.", verbs.ArtifactNew)
+	add(s, c, "artifact_new", "Create an artifact: the row first, then a file seeded from its shape. Prefixes: adr (numbered, never rewritten), story, idea, index, free, arch (one per workspace, always arch--primary.md, free-form; a second is refused). The new file fails its shape until its sections are filled; fill it, then artifact_validate.", verbs.ArtifactNew)
 	add(s, c, "artifact_list", "All artifacts with tags and shape status. Reconciles rows and files first. Filter by tag.", verbs.ArtifactList)
 	add(s, c, "artifact_tag", "Add or remove tags on an artifact. Tags live on the row, never in the file.", verbs.ArtifactTag)
 	add(s, c, "artifact_delete", "Delete an artifact: the row and the file together, so reconcile neither regenerates nor re-adopts it. Works offline; the next sync soft-deletes it on the server and other machines drop row and file. Give the file name, id, or short id.", verbs.ArtifactDelete)

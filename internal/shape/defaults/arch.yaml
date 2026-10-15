@@ -1,0 +1,8 @@
+# The workspace's master architecture doc (GRS-41). Free-form for now: no
+# required front matter, sections or length. A shape comes later; until
+# then the stub only suggests sections. One per workspace: arch--primary.md.
+prefix: arch
+title: Workspace architecture (free-form)
+frontMatter: []
+sections: []
+minBody: 0
