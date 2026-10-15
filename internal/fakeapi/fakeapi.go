@@ -74,6 +74,20 @@ type Server struct {
 	PresenceStatus int
 	open           map[chan string]api.PresenceConn
 	Hellos         []http.Header // the headers of every stream request
+
+	// Membership (GRS-42): the workspace's members and invites, and the
+	// caller (Me, an owner unless MeRole says otherwise). Accounts are the
+	// emails that exist (email -> user id); an invite to any other email is
+	// the API's no_account problem. MembersStatus, when set, answers every
+	// membership route with it and no problem body (an API from before
+	// GRS-34).
+	Me            string
+	MeRole        string
+	Accounts      map[string]string
+	Members       []api.Member
+	Invites       []api.Invite
+	MembersStatus int
+	inviteSeq     int
 }
 
 func New(prefix string) *Server {
@@ -210,6 +224,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/sync"):
 		time.Sleep(s.PullDelay)
 		s.pull(w, r)
+	case s.membership(w, r):
 	default:
 		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusNotFound)
