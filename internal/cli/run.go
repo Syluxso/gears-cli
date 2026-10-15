@@ -15,6 +15,7 @@ import (
 
 	"github.com/Syluxso/gears-cli/internal/api"
 	"github.com/Syluxso/gears-cli/internal/mcpserver"
+	"github.com/Syluxso/gears-cli/internal/session"
 	"github.com/Syluxso/gears-cli/internal/sync"
 	"github.com/Syluxso/gears-cli/internal/verbs"
 )
@@ -43,6 +44,14 @@ It shares the sync lock with the live board and card writes, so syncs never
 overlap. Not logged in or offline: one note on stderr, then it skips
 quietly until that changes.
 
+With periodic sync on, the first sync that goes through writes one
+workspace session entry, "gears run started: auto-sync every N min on
+<host> as <label>", and pushes it (GRS-38); a clean shutdown writes one
+"gears run stopped" entry and pushes it. Offline or not logged in, nothing
+is written until a sync goes through. Ticks write no entries: each sync
+is the heartbeat, since gears-api stamps the device's lastSeen on every
+request (GET /api/v1/agents).
+
 Harness config (Claude Code, .mcp.json):
   { "mcpServers": { "gears": { "command": "gears", "args": ["run", "--dir", "/path/to/repo"] } } }
 
@@ -58,8 +67,10 @@ Set GEARS_AGENT in the harness env so tools act as that agent.`,
 			return err
 		}
 		c.Notes = nil // notes ride in the tool results; stdout is the MCP channel
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
+		ctx, cancel := context.WithCancel(sigCtx)
+		defer cancel()
 		fmt.Fprintf(os.Stderr, "gears mcp: project %s, agent %s, %s\n", c.Project.Slug, c.Agent, c.Project.Root)
 		go liveBoard(ctx, c, nil)
 		every, err := syncInterval(cmd.Flags().Changed("sync-interval"), runSyncInterval, os.Getenv("GEARS_SYNC_INTERVAL"))
@@ -126,57 +137,119 @@ func syncInterval(flagSet bool, flagMinutes int, env string) (time.Duration, err
 // periodicSync runs verbs.Sync at once and then every interval until ctx
 // ends, one line on stderr per sync (GRS-25).
 func periodicSync(ctx context.Context, c verbs.Ctx, every time.Duration) {
+	agent := c.Agent
+	if agent == "" {
+		agent = session.DefaultAgent()
+	}
+	host, _ := os.Hostname()
+	if host == "" {
+		host = "unknown host"
+	}
+	started, stopped := runEntries(int(every/time.Minute), host, agent)
 	autoSync{
 		ticker: func() (<-chan time.Time, func()) {
 			t := time.NewTicker(every)
 			return t.C, t.Stop
 		},
-		run: func(ctx context.Context) (*sync.Report, error) { return verbs.SyncCtx(ctx, c, verbs.SyncIn{}) },
-		log: os.Stderr,
+		run:     func(ctx context.Context) (*sync.Report, error) { return verbs.SyncCtx(ctx, c, verbs.SyncIn{}) },
+		log:     os.Stderr,
+		record:  func(text string) error { _, err := session.AppendFor(c.Project, "", "done", agent, text); return err },
+		started: started,
+		stopped: stopped,
 	}.loop(ctx)
 }
 
+// runEntries are the workspace session entries gears run writes when its
+// periodic sync starts and stops (GRS-38).
+func runEntries(minutes int, host, agent string) (started, stopped string) {
+	started = fmt.Sprintf("gears run started: auto-sync every %d min on %s as %s", minutes, host, agent)
+	stopped = fmt.Sprintf("gears run stopped: auto-sync on %s as %s", host, agent)
+	return started, stopped
+}
+
+// stopGrace bounds the push of the "gears run stopped" entry at shutdown.
+const stopGrace = 10 * time.Second
+
 // autoSync is the periodic sync's loop with its clock, its sync and its
 // log swappable in tests.
+//
+// record (GRS-38), when set, writes a workspace session entry: started
+// after the first sync that goes through (proof we are online and logged
+// in), pushed at once by one more sync; stopped on shutdown, only if
+// started was written. Ticks write nothing; the sync itself is the
+// heartbeat (gears-api stamps the device's lastSeen per request).
 type autoSync struct {
 	ticker func() (<-chan time.Time, func())
 	run    func(context.Context) (*sync.Report, error)
 	log    io.Writer
+
+	record           func(text string) error
+	started, stopped string
 }
 
 func (a autoSync) loop(ctx context.Context) {
 	tick, stop := a.ticker()
 	defer stop()
-	quiet := "" // the skip reason last logged; "" after a sync went through
-	once := func() {
+	quiet := ""       // the skip reason last logged; "" after a sync went through
+	recorded := false // the started entry is written
+	once := func() bool {
 		r, err := a.run(ctx)
 		if ctx.Err() != nil {
-			return // shutting down; nothing to say
+			return false // shutting down; nothing to say
 		}
 		if err != nil {
 			why := skipReason(err)
 			if why == "" {
 				quiet = ""
 				fmt.Fprintf(a.log, "gears sync: %s\n", err)
-				return
+				return false
 			}
 			if why != quiet {
 				quiet = why
 				fmt.Fprintf(a.log, "gears sync: skipped, %s; skipping quietly until that changes\n", why)
 			}
-			return
+			return false
 		}
 		quiet = ""
 		fmt.Fprintf(a.log, "gears sync: pushed %d, pulled %d\n", r.Pushed, r.Pulled)
+		return true
 	}
-	once()
+	step := func() {
+		if !once() || recorded || a.record == nil {
+			return
+		}
+		if err := a.record(a.started); err != nil {
+			fmt.Fprintf(a.log, "gears run: could not record the start: %s\n", err)
+			return
+		}
+		recorded = true
+		a.push(ctx, "start")
+	}
+	step()
 	for {
 		select {
 		case <-ctx.Done():
+			if recorded {
+				if err := a.record(a.stopped); err != nil {
+					fmt.Fprintf(a.log, "gears run: could not record the stop: %s\n", err)
+					return
+				}
+				pctx, cancel := context.WithTimeout(context.Background(), stopGrace)
+				a.push(pctx, "stop")
+				cancel()
+			}
 			return
 		case <-tick:
-			once()
+			step()
 		}
+	}
+}
+
+// push sends a just-written run entry with one more sync. A failure is one
+// line; the entry stays local and goes with the next sync that works.
+func (a autoSync) push(ctx context.Context, what string) {
+	if _, err := a.run(ctx); err != nil && ctx.Err() == nil {
+		fmt.Fprintf(a.log, "gears run: the %s entry waits for the next sync: %s\n", what, err)
 	}
 }
 

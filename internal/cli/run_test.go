@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/Syluxso/gears-cli/internal/api"
 	"github.com/Syluxso/gears-cli/internal/fakeapi"
+	"github.com/Syluxso/gears-cli/internal/session"
 	"github.com/Syluxso/gears-cli/internal/sync"
 	"github.com/Syluxso/gears-cli/internal/verbs"
 )
@@ -310,5 +313,154 @@ func TestPeriodicSyncLogsOnStateChange(t *testing.T) {
 	}
 	if got := log.lines(); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("log:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// runLog is the loop's GRS-38 recorder writing real workspace entries.
+func runLog(c verbs.Ctx, calls *int) func(string) error {
+	return func(text string) error {
+		*calls++
+		_, err := session.AppendFor(c.Project, "", "done", c.Agent, text)
+		return err
+	}
+}
+
+// GRS-38: the first sync that goes through writes one workspace entry and
+// pushes it; ticks write nothing; shutdown writes and pushes one stop entry.
+func TestRunRecordsStartAndStop(t *testing.T) {
+	f := fakeapi.New("WS")
+	// The fake keeps card tables only; this records the session entries
+	// each push carries, by id.
+	var mu gosync.Mutex
+	entries := map[string]map[string]any{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/sync") {
+			b, _ := io.ReadAll(r.Body)
+			var in struct {
+				Rows map[string][]map[string]any `json:"rows"`
+			}
+			_ = json.Unmarshal(b, &in)
+			mu.Lock()
+			for _, m := range in.Rows["session_entries"] {
+				entries[fmt.Sprint(m["id"])] = m
+			}
+			mu.Unlock()
+			r.Body = io.NopCloser(bytes.NewReader(b))
+		}
+		f.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	pushed := func() []map[string]any {
+		mu.Lock()
+		defer mu.Unlock()
+		var out []map[string]any
+		for _, m := range entries {
+			out = append(out, m)
+		}
+		return out
+	}
+	fakeapi.Login(t, srv.URL)
+	p := fakeapi.Workspace(t)
+	fakeapi.Ready(t, p)
+	c := verbs.Ctx{Project: p, Agent: "tester"}
+	started, stopped := runEntries(5, "box", "tester")
+	if started != "gears run started: auto-sync every 5 min on box as tester" {
+		t.Fatalf("start text %q", started)
+	}
+
+	calls := 0
+	clock, log := newFakeClock(), &lockedBuf{}
+	stop := clock.start(t, autoSync{ticker: clock.ticker, log: log, record: runLog(c, &calls), started: started, stopped: stopped,
+		run: func(ctx context.Context) (*sync.Report, error) { return verbs.SyncCtx(ctx, c, verbs.SyncIn{}) }})
+	clock.tick(t) // taken after the startup sync, the record and its push
+	clock.tick(t)
+	clock.tick(t) // taken after the second tick's sync
+	rows := pushed()
+	if len(rows) != 1 || rows[0]["text"] != started || rows[0]["kind"] != "done" || rows[0]["agent"] != "tester" {
+		t.Fatalf("after start and ticks, the API has %v", rows)
+	}
+	stop()
+	if calls != 2 {
+		t.Fatalf("record called %d times, want 2", calls)
+	}
+	rows = pushed()
+	if len(rows) != 2 {
+		t.Fatalf("after stop, the API has %v", rows)
+	}
+	texts := []string{rows[0]["text"].(string), rows[1]["text"].(string)}
+	if !(texts[0] == stopped || texts[1] == stopped) {
+		t.Fatalf("no stop entry on the API: %q", texts)
+	}
+	for _, l := range log.lines() {
+		if strings.HasPrefix(l, "gears run:") {
+			t.Fatalf("unexpected run line: %q", log.lines())
+		}
+	}
+}
+
+// GRS-38: not logged in, nothing is written, not even at stop.
+func TestRunRecordsNothingWhenNotLoggedIn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("GEARS_API", "http://127.0.0.1:1")
+	p := fakeapi.Workspace(t)
+	c := verbs.Ctx{Project: p, Agent: "tester"}
+	calls := 0
+	clock, log := newFakeClock(), &lockedBuf{}
+	started, stopped := runEntries(5, "box", "tester")
+	stop := clock.start(t, autoSync{ticker: clock.ticker, log: log, record: runLog(c, &calls), started: started, stopped: stopped,
+		run: func(ctx context.Context) (*sync.Report, error) { return verbs.SyncCtx(ctx, c, verbs.SyncIn{}) }})
+	clock.tick(t)
+	clock.tick(t)
+	stop()
+	if calls != 0 {
+		t.Fatalf("record called %d times offline", calls)
+	}
+	if es, err := session.Recent(p, 1); err != nil || len(es) != 0 {
+		t.Fatalf("entries written offline: %v, %v", es, err)
+	}
+}
+
+// GRS-38: offline at start, the entry waits for the first sync that goes
+// through, and is written once.
+func TestRunRecordsWhenSyncFirstGoesThrough(t *testing.T) {
+	results := []error{api.ErrNotLoggedIn, errors.New("boom"), nil, nil, nil, nil}
+	var mu gosync.Mutex
+	i := 0
+	var got []string
+	clock, log := newFakeClock(), &lockedBuf{}
+	stop := clock.start(t, autoSync{ticker: clock.ticker, log: log, started: "up", stopped: "down",
+		record: func(text string) error {
+			mu.Lock()
+			defer mu.Unlock()
+			got = append(got, fmt.Sprintf("%s@%d", text, i))
+			return nil
+		},
+		run: func(ctx context.Context) (*sync.Report, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if i == len(results) {
+				return &sync.Report{}, nil
+			}
+			err := results[i]
+			i++
+			if err != nil {
+				return nil, err
+			}
+			return &sync.Report{}, nil
+		}})
+	clock.tick(t) // after the startup skip
+	clock.tick(t) // after boom
+	clock.tick(t) // after the first sync through, the record and its push
+	stop()
+	mu.Lock()
+	defer mu.Unlock()
+	// up after the third sync; down after the fifth (tick sync), before the stop push.
+	if strings.Join(got, ",") != "up@3,down@5" {
+		t.Fatalf("records %q", got)
+	}
+	if i != 6 {
+		t.Fatalf("%d syncs; want 6 (skip, boom, through, push, tick, stop push)", i)
 	}
 }
