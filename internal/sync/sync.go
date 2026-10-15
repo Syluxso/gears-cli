@@ -603,10 +603,25 @@ func pull(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 	cursorStr, _ := stateDB(db, "cursor")
 	var cursor int64
 	fmt.Sscan(cursorStr, &cursor)
+	deskScope, _ := stateDB(db, "desk_scope")
 	for {
 		out, err := c.Pull(ctx, ws, cursor)
 		if err != nil {
 			return fmt.Errorf("pull: %w", err)
+		}
+		// GRS-48: an API with desk privacy sends what this person may not
+		// see as deletes. A cache filled before that may hold such items:
+		// it pulls from the start, once, and they come down as deletes.
+		if out.Desk == "visible" && deskScope != "visible" {
+			deskScope = "visible"
+			if cursor != 0 {
+				r.Notes = append(r.Notes, "desk privacy: pulling from the start, once, to drop desk items that are not yours to see (cursor "+fmt.Sprint(cursor)+" -> 0)")
+				cursor = 0
+				if err := setState(db, "cursor", "0"); err != nil {
+					return err
+				}
+				continue
+			}
 		}
 		sortForApply(out.Changes)
 		for _, ch := range out.Changes {
@@ -632,6 +647,11 @@ func pull(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 		r.Cursor = cursor
 		if !out.More || len(out.Changes) == 0 {
 			break
+		}
+	}
+	if deskScope == "visible" {
+		if err := setState(db, "desk_scope", "visible"); err != nil {
+			return err
 		}
 	}
 	// Every card change up to the main cursor is applied now, so the card
@@ -963,10 +983,24 @@ var retryKey = map[string]string{
 }
 
 // pruneRetries forgets refused rows that are gone here (deleted, or a pull
-// took them away): there is nothing left to push.
+// took them away), and the board rows of a deleted card (the API refuses
+// them: the card is gone): there is nothing left to push.
 func pruneRetries(db *sql.DB) error {
 	for tbl, col := range retryKey {
 		if _, err := db.Exec(`DELETE FROM sync_retry WHERE tbl = ? AND id NOT IN (SELECT `+col+` FROM `+tbl+`)`, tbl); err != nil {
+			return err
+		}
+	}
+	gone := map[string]string{
+		"cards":                `SELECT id FROM cards WHERE deleted_at <> ''`,
+		"card_comments":        `SELECT x.id FROM card_comments x JOIN cards c ON c.id = x.card_id WHERE c.deleted_at <> ''`,
+		"card_links":           `SELECT x.id FROM card_links x JOIN cards c ON c.id = x.card_id WHERE c.deleted_at <> ''`,
+		"card_checklists":      `SELECT x.id FROM card_checklists x JOIN cards c ON c.id = x.card_id WHERE c.deleted_at <> ''`,
+		"card_checklist_items": `SELECT i.id FROM card_checklist_items i JOIN card_checklists l ON l.id = i.checklist_id JOIN cards c ON c.id = l.card_id WHERE c.deleted_at <> ''`,
+		"card_events":          `SELECT x.uid FROM card_events x JOIN cards c ON c.id = x.card_id WHERE c.deleted_at <> ''`,
+	}
+	for tbl, q := range gone {
+		if _, err := db.Exec(`DELETE FROM sync_retry WHERE tbl = ? AND id IN (`+q+`)`, tbl); err != nil {
 			return err
 		}
 	}

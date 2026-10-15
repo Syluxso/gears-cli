@@ -604,3 +604,43 @@ func TestSyncCardsCloseRoundTrip(t *testing.T) {
 		t.Fatalf("old-API card: %+v %v", got, err)
 	}
 }
+
+// GRS-47: a refused board row of a card deleted here is not retried: the
+// API refuses it for good (the card is gone).
+func TestPruneRetriesOfDeletedCard(t *testing.T) {
+	p := rootProject(t)
+	a, b := newTask(t, p, "one"), newTask(t, p, "two")
+	l, err := card.AddLink(p, a.Key, "blocks", b.Key, "", "", "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	keep := newTask(t, p, "three")
+	for _, r := range [][2]string{{"card_links", l.ID}, {"cards", keep.ID}} {
+		if _, err := db.Exec(`INSERT INTO sync_retry (tbl, id, error, at) VALUES (?, ?, 'not found', ?)`, r[0], r[1], store.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := card.Delete(p, a.Key, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pruneRetries(db); err != nil {
+		t.Fatal(err)
+	}
+	var tbls []string
+	_ = scanAll(db, `SELECT tbl FROM sync_retry`, nil, func(sc func(...any) error) error {
+		var s string
+		if err := sc(&s); err != nil {
+			return err
+		}
+		tbls = append(tbls, s)
+		return nil
+	})
+	if len(tbls) != 1 || tbls[0] != "cards" {
+		t.Fatalf("sync_retry after prune: %v", tbls)
+	}
+}
