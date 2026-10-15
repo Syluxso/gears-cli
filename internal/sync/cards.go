@@ -231,7 +231,7 @@ func collectCards(db *sql.DB, cs *cardSync, in *api.PushIn) error {
 	}
 
 	// States.
-	err := scanAll(db, `SELECT id, name, position, is_default, is_terminal, wip_limit, created_at, updated_at FROM card_states WHERE updated_at >= ?`,
+	err := scanAll(db, `SELECT id, name, position, is_default, is_terminal, wip_limit, created_at, updated_at FROM card_states WHERE updated_at >= ?`+retrying("card_states", "id"),
 		[]any{since}, func(sc func(...any) error) error {
 			var id, name, created, updated string
 			var pos, def, term, wip int
@@ -255,7 +255,7 @@ func collectCards(db *sql.DB, cs *cardSync, in *api.PushIn) error {
 	err = scanAll(db, `SELECT c.id, c.number, c.type, c.title, c.body, c.card_data, c.state_id, COALESCE(s.name, ''), c.size, c.priority, c.position,
 		c.assignee, c.parent_id, c.due_at, c.estimate_minutes, c.artifact, c.external_key, c.created_by, c.updated_by, c.created_at, c.updated_at,
 		c.completed_at, c.deleted_at, c.closed_at, c.state_changed_at
-		FROM cards c LEFT JOIN card_states s ON s.id = c.state_id WHERE c.updated_at >= ? OR (c.deleted_at <> '' AND c.deleted_at >= ?)`,
+		FROM cards c LEFT JOIN card_states s ON s.id = c.state_id WHERE c.updated_at >= ? OR (c.deleted_at <> '' AND c.deleted_at >= ?)`+retrying("cards", "c.id"),
 		[]any{since, since}, func(sc func(...any) error) error {
 			var id, typ, title, body, data, stateID, state, size, assignee, parent, due, artifact, external, createdBy, updatedBy, created, updated, completed, deleted string
 			var closed, stateChanged string
@@ -308,7 +308,7 @@ func collectCards(db *sql.DB, cs *cardSync, in *api.PushIn) error {
 
 	// Comments: soft-deleted ones go up as deletes only.
 	err = scanAll(db, `SELECT id, card_id, body, agent, created_at, updated_at, deleted_at FROM card_comments
-		WHERE updated_at >= ? OR (deleted_at <> '' AND deleted_at >= ?)`, []any{since, since}, func(sc func(...any) error) error {
+		WHERE updated_at >= ? OR (deleted_at <> '' AND deleted_at >= ?)`+retrying("card_comments", "id"), []any{since, since}, func(sc func(...any) error) error {
 		var id, card, body, agent, created, updated, deleted string
 		if err := sc(&id, &card, &body, &agent, &created, &updated, &deleted); err != nil {
 			return err
@@ -324,7 +324,7 @@ func collectCards(db *sql.DB, cs *cardSync, in *api.PushIn) error {
 		return err
 	}
 
-	err = scanAll(db, `SELECT id, card_id, kind, target_card_id, url, title, agent, created_at, updated_at FROM card_links WHERE updated_at >= ?`,
+	err = scanAll(db, `SELECT id, card_id, kind, target_card_id, url, title, agent, created_at, updated_at FROM card_links WHERE updated_at >= ?`+retrying("card_links", "id"),
 		[]any{since}, func(sc func(...any) error) error {
 			var id, card, kind, target, url, title, agent, created, updated string
 			if err := sc(&id, &card, &kind, &target, &url, &title, &agent, &created, &updated); err != nil {
@@ -338,7 +338,7 @@ func collectCards(db *sql.DB, cs *cardSync, in *api.PushIn) error {
 		return err
 	}
 
-	err = scanAll(db, `SELECT id, card_id, title, position, created_at, updated_at FROM card_checklists WHERE updated_at >= ?`,
+	err = scanAll(db, `SELECT id, card_id, title, position, created_at, updated_at FROM card_checklists WHERE updated_at >= ?`+retrying("card_checklists", "id"),
 		[]any{since}, func(sc func(...any) error) error {
 			var id, card, title, created, updated string
 			var pos int
@@ -353,7 +353,7 @@ func collectCards(db *sql.DB, cs *cardSync, in *api.PushIn) error {
 	}
 
 	err = scanAll(db, `SELECT i.id, i.checklist_id, l.card_id, i.title, i.done, i.position, i.done_at, i.done_by, i.created_at, i.updated_at
-		FROM card_checklist_items i JOIN card_checklists l ON l.id = i.checklist_id WHERE i.updated_at >= ?`,
+		FROM card_checklist_items i JOIN card_checklists l ON l.id = i.checklist_id WHERE i.updated_at >= ?`+retrying("card_checklist_items", "i.id"),
 		[]any{since}, func(sc func(...any) error) error {
 			var id, list, card, title, doneAt, doneBy, created, updated string
 			var done, pos int
@@ -372,7 +372,7 @@ func collectCards(db *sql.DB, cs *cardSync, in *api.PushIn) error {
 	if err := store.EnsureEventUIDs(db); err != nil {
 		return err
 	}
-	return scanAll(db, `SELECT uid, card_id, at, agent, kind, detail FROM card_events WHERE at >= ?`, []any{since}, func(sc func(...any) error) error {
+	return scanAll(db, `SELECT uid, card_id, at, agent, kind, detail FROM card_events WHERE at >= ?`+retrying("card_events", "uid"), []any{since}, func(sc func(...any) error) error {
 		var id, card, at, agent, kind, detail string
 		if err := sc(&id, &card, &at, &agent, &kind, &detail); err != nil {
 			return err

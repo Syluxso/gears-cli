@@ -396,12 +396,15 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 		projectID = p.ID
 	}
 	in := api.PushIn{Rows: map[string][]any{}}
+	if err := pruneRetries(db); err != nil {
+		return err
+	}
 
 	// Desk items: anything created or closed since the last push.
 	// assignedTo always goes up ("" clears it on the API); author never does:
 	// the API sets it from the token (GRS-35).
 	rows, err := db.Query(`SELECT id, type, from_agent, to_agent, text, ref, created_at, state, closed_at, answer, updated_at, assigned_to FROM desk_items
-		WHERE created_at >= ? OR closed_at >= ? OR updated_at >= ?`, since, since, since)
+		WHERE created_at >= ? OR closed_at >= ? OR updated_at >= ?`+retrying("desk_items", "id"), since, since, since)
 	if err != nil {
 		return err
 	}
@@ -425,7 +428,7 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 	if err := session.EnsureUIDs(db); err != nil {
 		return err
 	}
-	rows, err = db.Query(`SELECT uid, at, agent, kind, text, project_id FROM session_entries WHERE at >= ?`, since)
+	rows, err = db.Query(`SELECT uid, at, agent, kind, text, project_id FROM session_entries WHERE at >= ?`+retrying("session_entries", "uid"), since)
 	if err != nil {
 		return err
 	}
@@ -468,17 +471,14 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 			}
 		}
 	}
+	retry, err := retrySet(db, "artifacts")
+	if err != nil {
+		return err
+	}
 	for _, a := range arts {
-		updated := a.UpdatedAt.UTC().Format(time.RFC3339)
-		if since != "" && updated < since {
+		row := artifactPushRow(a)
+		if since != "" && row["updatedAt"].(string) < since && !retry[a.ID] {
 			continue
-		}
-		row := map[string]any{"id": a.ID, "prefix": a.Prefix, "slug": a.Slug, "title": a.Title, "status": a.Status, "tags": a.Tags,
-			"bodyHash": a.BodyHash, "shapeOk": a.ShapeOK, "updatedAt": updated}
-		// The row's own project, never the binding's: one cache holds every
-		// project's artifacts and the workspace-level ones (GRS-40).
-		if a.ProjectID != "" {
-			row["projectId"] = a.ProjectID
 		}
 		in.Rows["artifacts"] = append(in.Rows["artifacts"], row)
 	}
@@ -536,6 +536,9 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 			}
 		}
 		r.Pushed, r.Skipped, r.Failed = out.Applied, out.Skipped, out.Failed
+		if err := trackRetries(db, in, out.Results); err != nil {
+			return err
+		}
 		failed := failedRow
 		for _, res := range out.Results {
 			if res.Error != "" {
@@ -560,6 +563,16 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 			continue // no row on the API to hang the body on; retried next sync
 		}
 		fileID, ok, err := c.PutArtifactContent(ctx, a.ID, u.body)
+		if api.IsNotFound(err) {
+			// The API has no row for it: refused, or pushed by a CLI whose
+			// watermark then passed it by (GRS-47). The row goes up again,
+			// then the body.
+			if perr := pushArtifactRow(ctx, c, db, ws, a, r); perr != nil {
+				r.Notes = append(r.Notes, "content "+a.File+": the API has no row for it, and "+perr.Error()+" (retried on the next sync)")
+				continue
+			}
+			fileID, ok, err = c.PutArtifactContent(ctx, a.ID, u.body)
+		}
 		if err != nil {
 			r.Notes = append(r.Notes, "content "+a.File+": "+err.Error()+" (retried on the next sync)")
 			continue
@@ -713,6 +726,11 @@ func apply(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, c
 		_ = db.QueryRow(`SELECT COUNT(*) FROM sync_deletes WHERE tbl = 'artifacts' AND id = ?`, a.ID).Scan(&tomb)
 		if tomb > 0 {
 			return false, nil
+		}
+		if a.Prefix == "arch" && pid == "" {
+			if err := dropStrayArch(db, p, a.ID, r); err != nil {
+				return false, err
+			}
 		}
 		file, err := cacheFile(db, p, a.ID, a.Prefix, a.Slug, pid, r)
 		if err != nil {
@@ -896,4 +914,151 @@ func contentHashes(db *sql.DB) (map[string]string, error) {
 		out[id] = h
 	}
 	return out, rows.Err()
+}
+
+// ------------------------------------------------------------- retries
+
+// artifactPushRow is an artifact as it goes up in a push.
+func artifactPushRow(a artifact.Artifact) map[string]any {
+	row := map[string]any{"id": a.ID, "prefix": a.Prefix, "slug": a.Slug, "title": a.Title, "status": a.Status, "tags": a.Tags,
+		"bodyHash": a.BodyHash, "shapeOk": a.ShapeOK, "updatedAt": a.UpdatedAt.UTC().Format(time.RFC3339)}
+	// The row's own project, never the binding's: one cache holds every
+	// project's artifacts and the workspace-level ones (GRS-40).
+	if a.ProjectID != "" {
+		row["projectId"] = a.ProjectID
+	}
+	return row
+}
+
+// pushArtifactRow pushes one artifact row on its own: the API answered its
+// content with 404, so it has no row for it.
+func pushArtifactRow(ctx context.Context, c *api.Client, db *sql.DB, ws string, a artifact.Artifact, r *Report) error {
+	in := api.PushIn{Rows: map[string][]any{"artifacts": {artifactPushRow(a)}}}
+	out, err := c.Push(ctx, ws, in)
+	if err != nil {
+		return fmt.Errorf("push: %w", err)
+	}
+	if err := trackRetries(db, in, out.Results); err != nil {
+		return err
+	}
+	for _, res := range out.Results {
+		if res.Table == "artifacts" && res.ID == a.ID && res.Error != "" {
+			r.Failed++
+			return fmt.Errorf("push of its row: %s", res.Error)
+		}
+	}
+	r.Pushed += out.Applied
+	return nil
+}
+
+// retryKey is the column each table's pushed id comes from.
+var retryKey = map[string]string{
+	"desk_items": "id", "session_entries": "uid", "artifacts": "id",
+	"card_states": "id", "cards": "id", "card_comments": "id", "card_links": "id",
+	"card_checklists": "id", "card_checklist_items": "id", "card_events": "uid",
+}
+
+// pruneRetries forgets refused rows that are gone here (deleted, or a pull
+// took them away): there is nothing left to push.
+func pruneRetries(db *sql.DB) error {
+	for tbl, col := range retryKey {
+		if _, err := db.Exec(`DELETE FROM sync_retry WHERE tbl = ? AND id NOT IN (SELECT `+col+` FROM `+tbl+`)`, tbl); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// dropStrayArch makes way for the workspace's architecture doc (one per
+// workspace, GRS-41) when the API sends it: a cache that wrote its own stub
+// before it knew the workspace (gears init in a standalone clone) drops that
+// stub, which the API refuses as a second arch, so the workspace's takes
+// arch--primary.md. A local arch that was edited is kept (cached beside;
+// its refusal stays in the sync notes for someone to settle).
+func dropStrayArch(db *sql.DB, p *project.Project, keepID string, r *Report) error {
+	type stray struct{ id, file, title string }
+	var found []stray
+	err := scanAll(db, `SELECT id, file, title FROM artifacts WHERE prefix = 'arch' AND project_id = '' AND id != ?`, []any{keepID},
+		func(sc func(...any) error) error {
+			var s stray
+			if err := sc(&s.id, &s.file, &s.title); err != nil {
+				return err
+			}
+			found = append(found, s)
+			return nil
+		})
+	if err != nil {
+		return err
+	}
+	for _, s := range found {
+		b, err := os.ReadFile(filepath.Join(p.ArtifactsDir(), s.file))
+		if err == nil && artifact.Hash(string(b)) != artifact.Hash(artifact.ArchStub(s.title)) {
+			continue
+		}
+		if err := artifact.Forget(db, p, s.id); err != nil {
+			return err
+		}
+		_, _ = db.Exec(`DELETE FROM sync_retry WHERE tbl = 'artifacts' AND id = ?`, s.id)
+		r.Notes = append(r.Notes, fmt.Sprintf("artifact %s: an unedited local architecture stub gave way to the workspace's", short(s.id)))
+	}
+	return nil
+}
+
+// retrying is the SQL that adds a table's refused rows to a "changed since"
+// query: col is the column the pushed id comes from.
+func retrying(tbl, col string) string {
+	return " OR " + col + " IN (SELECT id FROM sync_retry WHERE tbl = '" + tbl + "')"
+}
+
+// retrySet is the ids of one table's refused rows.
+func retrySet(db *sql.DB, tbl string) (map[string]bool, error) {
+	out := map[string]bool{}
+	err := scanAll(db, `SELECT id FROM sync_retry WHERE tbl = ?`, []any{tbl}, func(sc func(...any) error) error {
+		var id string
+		if err := sc(&id); err != nil {
+			return err
+		}
+		out[id] = true
+		return nil
+	})
+	return out, err
+}
+
+// trackRetries keeps sync_retry in step with what the API answered: every
+// row sent and refused is kept (and goes up on every push until it lands),
+// every row sent and taken is cleared. Deletes have their own queue
+// (sync_deletes) and are not tracked here.
+func trackRetries(db *sql.DB, in api.PushIn, results []api.PushResult) error {
+	refused := map[string]string{}
+	for _, res := range results {
+		if res.Error != "" {
+			refused[res.Table+"/"+res.ID] = res.Error
+		}
+	}
+	now := store.Now()
+	return inTx(db, func(tx *sql.Tx) error {
+		for tbl, rows := range in.Rows {
+			for _, row := range rows {
+				m, ok := row.(map[string]any)
+				if !ok {
+					continue
+				}
+				id, _ := m["id"].(string)
+				if id == "" {
+					continue
+				}
+				if msg, bad := refused[tbl+"/"+id]; bad {
+					if _, err := tx.Exec(`INSERT INTO sync_retry (tbl, id, error, at) VALUES (?, ?, ?, ?)
+						ON CONFLICT(tbl, id) DO UPDATE SET error = excluded.error, at = excluded.at`, tbl, id, msg, now); err != nil {
+						return err
+					}
+					continue
+				}
+				if _, err := tx.Exec(`DELETE FROM sync_retry WHERE tbl = ? AND id = ?`, tbl, id); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
 }

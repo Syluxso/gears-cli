@@ -188,6 +188,9 @@ func PushCards(ctx context.Context, c *api.Client, p *project.Project) (*CardPus
 	if !answered {
 		return nil, api.ErrNoCards // the watermark stays; gears sync says the same
 	}
+	if err := trackRetries(db, in, res.Results); err != nil {
+		return nil, err
+	}
 	failed := map[string]bool{}
 	for _, x := range res.Results {
 		if !isCardTable(x.Table) {

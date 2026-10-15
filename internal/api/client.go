@@ -649,6 +649,21 @@ func (c *Client) Push(ctx context.Context, workspaceID string, in PushIn) (*Push
 	return &out, err
 }
 
+// StatusError is an answer the API gave with an error status.
+type StatusError struct {
+	Op   string
+	Code int
+	Body string
+}
+
+func (e *StatusError) Error() string { return fmt.Sprintf("%s: %d %s", e.Op, e.Code, e.Body) }
+
+// IsNotFound reports an API answer of 404.
+func IsNotFound(err error) bool {
+	var se *StatusError
+	return errors.As(err, &se) && se.Code == http.StatusNotFound
+}
+
 // PutArtifactContent uploads a body. ok is false (no error) when the server
 // has no file store configured (501).
 func (c *Client) PutArtifactContent(ctx context.Context, id string, body []byte) (fileID string, ok bool, err error) {
@@ -660,7 +675,7 @@ func (c *Client) PutArtifactContent(ctx context.Context, id string, body []byte)
 		return "", false, nil
 	}
 	if code >= 300 {
-		return "", false, fmt.Errorf("content upload: %d %s", code, strings.TrimSpace(string(raw)))
+		return "", false, &StatusError{Op: "content upload", Code: code, Body: strings.TrimSpace(string(raw))}
 	}
 	var a struct {
 		FileID string `json:"fileId"`

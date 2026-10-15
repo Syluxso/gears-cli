@@ -258,6 +258,16 @@ var schema = []string{
 		deleted_at TEXT NOT NULL,
 		PRIMARY KEY (tbl, id)
 	)`,
+	// Refused rows (GRS-47): a row the server answered with an error stays
+	// here and goes up on every push, whatever the watermark, until the
+	// server takes it. The watermark moves on for everything else.
+	`CREATE TABLE IF NOT EXISTS sync_retry (
+		tbl   TEXT NOT NULL,
+		id    TEXT NOT NULL,
+		error TEXT NOT NULL DEFAULT '',
+		at    TEXT NOT NULL,
+		PRIMARY KEY (tbl, id)
+	)`,
 	`CREATE TABLE IF NOT EXISTS session_entries (
 		id    INTEGER PRIMARY KEY,
 		at    TEXT NOT NULL,

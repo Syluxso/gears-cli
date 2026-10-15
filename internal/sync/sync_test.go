@@ -36,6 +36,13 @@ type fakeAPI struct {
 	content  map[string][]byte // artifact id -> body
 	cursors  []string          // cursor asked for on each pull
 	board    fakeBoard
+
+	// GRS-47: refusePrefix answers an artifact row of that prefix with an
+	// error (as gears-api did for arch before de37b4d). With strictContent,
+	// a content upload for an artifact the fake has no row for is 404.
+	refusePrefix  string
+	strictContent bool
+	artifactRows  map[string]bool
 }
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -61,6 +68,18 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				res := api.PushResult{Table: tbl, ID: id, Applied: true}
 				if isCardTable(tbl) {
 					res = f.board.push(tbl, m)
+				}
+				if tbl == "artifacts" {
+					if f.refusePrefix != "" && m["prefix"] == f.refusePrefix {
+						res = api.PushResult{Table: tbl, ID: id, Error: "artifacts: invalid prefix"}
+						out.Failed++
+						out.Results = append(out.Results, res)
+						continue
+					}
+					if f.artifactRows == nil {
+						f.artifactRows = map[string]bool{}
+					}
+					f.artifactRows[id] = true
 				}
 				out.Results = append(out.Results, res)
 				if res.Applied {
@@ -127,6 +146,12 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(r.URL.Path, "/content"):
 		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/artifacts/"), "/content")
 		if r.Method == http.MethodPut {
+			if f.strictContent && !f.artifactRows[id] {
+				w.Header().Set("Content-Type", "application/problem+json")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = io.WriteString(w, `{"title":"Not Found","status":404,"detail":"not found","code":"gears.not_found"}`)
+				return
+			}
 			b, _ := io.ReadAll(r.Body)
 			if f.content == nil {
 				f.content = map[string][]byte{}
@@ -712,5 +737,163 @@ func TestSyncDoesNotPushStubForBodylessRow(t *testing.T) {
 	a, err := artifact.Find(p, id)
 	if err != nil || !a.FilePresent {
 		t.Fatalf("cached row: %+v %v", a, err)
+	}
+}
+
+// GRS-47: a row the API refused stays pending and goes up on every later
+// sync, past the watermark, until the API takes it; its content follows.
+func TestSyncRetriesRefusedRow(t *testing.T) {
+	res, err := project.Init(t.TempDir(), "ws", "WS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := res.Project
+	p.Workspace = p.ID
+	f := &fakeAPI{refusePrefix: "arch", strictContent: true}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	cl := api.Anonymous(srv.URL)
+	a, err := artifact.New(p, "arch", "Primary", "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := Run(context.Background(), cl, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Failed != 1 || r.ContentUp != 0 {
+		t.Fatalf("first sync: failed %d content %d notes %v", r.Failed, r.ContentUp, r.Notes)
+	}
+	time.Sleep(1100 * time.Millisecond) // the watermark passes the row
+	// Still refused: still pending, still sent.
+	if r, err = Run(context.Background(), cl, p); err != nil || r.Failed != 1 {
+		t.Fatalf("second sync: %+v %v", r, err)
+	}
+	f.mu.Lock()
+	f.refusePrefix = ""
+	f.mu.Unlock()
+	time.Sleep(1100 * time.Millisecond)
+	if r, err = Run(context.Background(), cl, p); err != nil {
+		t.Fatal(err)
+	}
+	if r.Failed != 0 || r.ContentUp != 1 {
+		t.Fatalf("after the API takes arch: failed %d content %d notes %v", r.Failed, r.ContentUp, r.Notes)
+	}
+	f.mu.Lock()
+	landed, body := f.artifactRows[a.ID], f.content[a.ID]
+	f.mu.Unlock()
+	if !landed || len(body) == 0 {
+		t.Fatalf("row %v body %q", landed, body)
+	}
+	db, err := store.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var n int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM sync_retry`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("sync_retry still holds %d rows", n)
+	}
+	// Nothing left to send.
+	time.Sleep(1100 * time.Millisecond)
+	if r, err = Run(context.Background(), cl, p); err != nil || r.ContentUp != 0 || len(r.Notes) != 0 {
+		t.Fatalf("settled sync: %+v %v", r, err)
+	}
+}
+
+// GRS-47: a cache whose watermark passed a refused row before retries were
+// tracked (the arch--primary.md case): the content upload is 404, so the
+// row goes up again and then the body.
+func TestSyncContent404RepushesRow(t *testing.T) {
+	res, err := project.Init(t.TempDir(), "ws", "WS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := res.Project
+	p.Workspace = p.ID
+	f := &fakeAPI{refusePrefix: "arch", strictContent: true}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	cl := api.Anonymous(srv.URL)
+	a, err := artifact.New(p, "arch", "Primary", "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), cl, p); err != nil {
+		t.Fatal(err)
+	}
+	// As an older CLI left it: no record of the refusal.
+	db, err := store.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM sync_retry`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	f.mu.Lock()
+	f.refusePrefix = ""
+	f.mu.Unlock()
+	time.Sleep(1100 * time.Millisecond)
+	r, err := Run(context.Background(), cl, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	landed, body := f.artifactRows[a.ID], f.content[a.ID]
+	f.mu.Unlock()
+	if !landed || len(body) == 0 || r.ContentUp != 1 || r.Pushed != 1 {
+		t.Fatalf("row %v body %q report %+v", landed, body, r)
+	}
+}
+
+// A cache that wrote its own architecture stub before it knew the workspace
+// (the API refuses it: one arch per workspace) drops the unedited stub when
+// the workspace's arrives, and stops retrying it; an edited one is kept.
+func TestSyncStrayArchStubGivesWay(t *testing.T) {
+	for _, edited := range []bool{false, true} {
+		res, err := project.Init(t.TempDir(), "ws", "WS")
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := res.Project
+		p.Workspace = p.ID
+		f := &fakeAPI{refusePrefix: "arch"}
+		srv := httptest.NewServer(f)
+		local, _, err := artifact.InitArch(p, "tester")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if edited {
+			if err := os.WriteFile(local.Path, []byte("---\ntitle: Architecture\n---\n\n# Mine\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		const theirs = "01a130c3-0000-7000-8000-00000000a7c1"
+		f.queue([]api.Change{artifactRow(t, theirs, "arch", "primary", "", "# Theirs\n")})
+		cl := api.Anonymous(srv.URL)
+		if _, err := Run(context.Background(), cl, p); err != nil {
+			t.Fatal(err)
+		}
+		_, err = artifact.Find(p, local.ID)
+		if gone := err != nil; gone == edited {
+			t.Fatalf("edited %v: local arch gone %v", edited, gone)
+		}
+		th, err := artifact.Find(p, theirs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !edited && th.File != "arch--primary.md" {
+			t.Fatalf("workspace arch cached as %s", th.File)
+		}
+		r, err := Run(context.Background(), cl, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := map[bool]int{false: 0, true: 1}[edited]; r.Failed != want {
+			t.Fatalf("edited %v: failed %d notes %v", edited, r.Failed, r.Notes)
+		}
+		srv.Close()
 	}
 }
