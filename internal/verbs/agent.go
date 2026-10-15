@@ -8,7 +8,8 @@ import "github.com/Syluxso/gears-cli/internal/session"
 type AgentInfo struct {
 	Label string `json:"label"`
 	// Source is flag (gears -a), env (GEARS_AGENT, also how an MCP server
-	// gets it), login (gears login --label) or default ("local").
+	// gets it), workspace (the name gears init saved for this workspace),
+	// login (gears login --label) or default ("local").
 	Source string `json:"source"`
 	// SourceText says the same for a person.
 	SourceText  string   `json:"sourceText"`
@@ -20,7 +21,11 @@ type AgentInfo struct {
 func (c Ctx) agentInfo() AgentInfo {
 	label, source := c.Agent, c.AgentSource
 	if label == "" {
-		label, source = session.ResolveAgent("")
+		dir := ""
+		if c.Project != nil {
+			dir = c.Project.Root
+		}
+		label, source = session.ResolveAgentAt("", dir)
 	} else if source == "" {
 		source = session.AgentFromFlag
 	}
@@ -33,10 +38,12 @@ func agentSourceText(source string) string {
 		return "the -a/--agent flag"
 	case session.AgentFromEnv:
 		return "the GEARS_AGENT environment variable"
+	case session.AgentFromWorkspace:
+		return "the workspace agent name (gears init --name, saved in .gears/.gearbox/agent)"
 	case session.AgentFromLogin:
 		return "the device login label (gears login --label)"
 	}
-	return `the default ("local"): no -a flag, no GEARS_AGENT, no login label`
+	return `the default ("local"): no -a flag, no GEARS_AGENT, no workspace name, no login label`
 }
 
 // AgentHowToChange is every way to set the label, strongest first.
@@ -45,6 +52,7 @@ func AgentHowToChange() []string {
 		"one command: gears -a <name> <command>   (e.g. gears -a claude-local status)",
 		"this shell: export GEARS_AGENT=<name> (bash/zsh) | set GEARS_AGENT=<name> (cmd) | $env:GEARS_AGENT=\"<name>\" (PowerShell)",
 		`MCP (gears run): add "env": {"GEARS_AGENT": "<name>"} to the gears server in .mcp.json, then restart the MCP server`,
-		"this install's default: gears login --label <name>   (used when neither -a nor GEARS_AGENT is set)",
+		"this workspace on this machine: gears init --name <name>   (used when neither -a nor GEARS_AGENT is set)",
+		"this install's default: gears login --label <name>   (used when none of the above is set)",
 	}
 }

@@ -62,7 +62,8 @@ mkdir -p "$A" "$C"
 pid() { ( cd "$WS" && "$G" projects list --json ) | python -c "import json,sys; print([p['id'] for p in json.load(sys.stdin)['projects'] if p['slug']=='$1'][0])"; }
 
 echo "== init at the workspace root scans projects/ (not logged in yet: offline ids)"
-( cd "$WS" && "$G" init --prefix WS )
+( cd "$WS" && "$G" init --prefix WS --name claude-code+local )
+[ "$(tr -d '\r\n' < "$WS/.gears/.gearbox/agent")" = "claude-code+local" ] || fail "init did not save the agent name"
 [ -f "$WS/.gears/projects.yaml" ] || fail "no manifest"
 ALPHA_ID=$(pid alpha)
 WS_ID=$(grep '^id:' "$WS/.gears/project.yaml" | awk '{print $2}')
@@ -86,7 +87,7 @@ echo "== write inside projects/alpha (resolves to the root binding), sync from t
 [ ! -e "$A/.gears" ] || fail "a .gears appeared under projects/"
 
 echo "== fresh standalone clone binds by remote and pulls"
-( cd "$C" && "$G" init >/dev/null && "$G" login --email a@b.c --password x --label grok-build+ubuntu && "$G" sync )
+( cd "$C" && "$G" init --name grok-build+ubuntu >/dev/null && "$G" login --email a@b.c --password x --label grok-build+ubuntu && "$G" sync )
 CLONE_ID=$(grep '^id:' "$C/.gears/project.yaml" | awk '{print $2}')
 [ "$CLONE_ID" = "$ALPHA_ID" ] || fail "clone did not adopt alpha's id ($CLONE_ID vs $ALPHA_ID)"
 ( cd "$C" && "$G" -a claude-code+local desk list --json | grep -q "Tried A" ) || fail "clone did not receive the handoff"

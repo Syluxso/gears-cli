@@ -34,12 +34,30 @@ var root = &cobra.Command{
 
 func init() {
 	root.PersistentFlags().BoolVar(&jsonOut, "json", false, "print the result as JSON (the same shape the MCP tools return)")
-	root.PersistentFlags().StringVarP(&globalAgent, "agent", "a", "", "act as this agent (default: $GEARS_AGENT, else the gears login --label, else \"local\")")
+	root.PersistentFlags().StringVarP(&globalAgent, "agent", "a", "", "act as this agent (default: $GEARS_AGENT, else the name gears init saved for this workspace, else the gears login --label, else \"local\")")
 	session.LoginLabel = loginLabelFor
+	session.WorkspaceAgent = workspaceAgentAt
+}
+
+// workspaceAgentAt is the agent name gears init saved for the workspace dir
+// is in ("" is the working directory), the third place the acting agent
+// comes from (GRS-63).
+func workspaceAgentAt(dir string) string {
+	if dir == "" {
+		var err error
+		if dir, err = os.Getwd(); err != nil {
+			return ""
+		}
+	}
+	p, err := project.Find(dir)
+	if err != nil {
+		return ""
+	}
+	return p.AgentName()
 }
 
 // loginLabelFor is the label gears login saved for the current API host,
-// the third place the acting agent comes from (GRS-21).
+// the fourth place the acting agent comes from (GRS-21).
 func loginLabelFor() string {
 	creds, err := api.LoadCredentials()
 	if err != nil {
@@ -73,7 +91,7 @@ func ctxAt(dir string) (verbs.Ctx, error) {
 	if err != nil {
 		return verbs.Ctx{}, err
 	}
-	agent, source := session.ResolveAgent(globalAgent)
+	agent, source := session.ResolveAgentAt(globalAgent, dir)
 	return verbs.Ctx{Project: p, Agent: agent, AgentSource: source, Current: project.Current(p, dir), Notes: os.Stderr}, nil
 }
 

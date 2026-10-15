@@ -268,10 +268,8 @@ func Init(dir, slug, prefix string) (*InitResult, error) {
 	// workspace is a project in the root's manifest, not a binding of its
 	// own. A stray binding already here is refused too: the root wins.
 	// With nothing above, init creates the workspace here.
-	if parent := filepath.Dir(dir); parent != dir {
-		if anc, err := Find(parent); err == nil {
-			return nil, &UnderBindingError{Dir: dir, Root: anc.Root, Workspace: anc.IsWorkspace()}
-		}
+	if err := CheckInitDir(dir); err != nil {
+		return nil, err
 	}
 
 	// Binding.

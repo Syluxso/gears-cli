@@ -45,26 +45,43 @@ func (e Entry) Short() string {
 
 // Where the acting agent's label came from (GRS-21), in precedence order.
 const (
-	AgentFromFlag    = "flag"    // gears -a <name> / --agent
-	AgentFromEnv     = "env"     // $GEARS_AGENT (also the MCP server's env in .mcp.json)
-	AgentFromLogin   = "login"   // the label saved by gears login --label for the API host
-	AgentFromDefault = "default" // nothing set: "local"
+	AgentFromFlag      = "flag"      // gears -a <name> / --agent
+	AgentFromEnv       = "env"       // $GEARS_AGENT (also the MCP server's env in .mcp.json)
+	AgentFromWorkspace = "workspace" // the name gears init saved for this workspace (GRS-63)
+	AgentFromLogin     = "login"     // the label saved by gears login --label for the API host
+	AgentFromDefault   = "default"   // nothing set: "local"
 )
+
+// WorkspaceAgent returns the agent name saved for the workspace that dir is
+// in ("" means the working directory), or "". The CLI sets it; left nil, as
+// in package tests, the workspace step is skipped.
+var WorkspaceAgent func(dir string) string
 
 // LoginLabel returns the device login label for the current API host, or
 // "". The CLI sets it (the credentials file lives in package api); left
 // nil, as in package tests, the login step is skipped.
 var LoginLabel func() string
 
-// ResolveAgent is the acting agent's label and where it came from: the
-// -a flag value when given, else $GEARS_AGENT, else the device login
-// label, else "local".
+// ResolveAgent is the acting agent's label and where it came from, for the
+// working directory. See ResolveAgentAt.
 func ResolveAgent(flag string) (label, source string) {
+	return ResolveAgentAt(flag, "")
+}
+
+// ResolveAgentAt is the acting agent's label and where it came from: the
+// -a flag value when given, else $GEARS_AGENT, else the name saved for the
+// workspace dir is in, else the device login label, else "local".
+func ResolveAgentAt(flag, dir string) (label, source string) {
 	if a := strings.TrimSpace(flag); a != "" {
 		return a, AgentFromFlag
 	}
 	if a := strings.TrimSpace(os.Getenv("GEARS_AGENT")); a != "" {
 		return a, AgentFromEnv
+	}
+	if WorkspaceAgent != nil {
+		if a := strings.TrimSpace(WorkspaceAgent(dir)); a != "" {
+			return a, AgentFromWorkspace
+		}
 	}
 	if LoginLabel != nil {
 		if a := strings.TrimSpace(LoginLabel()); a != "" {
@@ -75,7 +92,7 @@ func ResolveAgent(flag string) (label, source string) {
 }
 
 // DefaultAgent is the label used when none is given: $GEARS_AGENT, else
-// the device login label, else "local".
+// the workspace's saved name, else the device login label, else "local".
 func DefaultAgent() string {
 	a, _ := ResolveAgent("")
 	return a

@@ -23,6 +23,7 @@ func TestAgentInfoInStatusAndWhoami(t *testing.T) {
 	}{
 		{Ctx{Project: p, Agent: "grok", AgentSource: session.AgentFromFlag}, "grok", "flag", "-a/--agent"},
 		{Ctx{Project: p, Agent: "claude-local", AgentSource: session.AgentFromEnv}, "claude-local", "env", "GEARS_AGENT"},
+		{Ctx{Project: p, Agent: "ws-name", AgentSource: session.AgentFromWorkspace}, "ws-name", "workspace", "gears init --name"},
 		{Ctx{Project: p, Agent: "codex", AgentSource: session.AgentFromLogin}, "codex", "login", "gears login --label"},
 		{Ctx{Project: p}, "local", "default", `"local"`},
 	} {
@@ -52,7 +53,7 @@ func TestAgentInfoInStatusAndWhoami(t *testing.T) {
 				t.Fatalf("%s %s: %+v", name, c.label, a)
 			}
 			all := strings.Join(a.HowToChange, "\n")
-			for _, want := range []string{"gears -a <name>", "export GEARS_AGENT=<name>", "set GEARS_AGENT=<name>", `$env:GEARS_AGENT`, ".mcp.json", `"GEARS_AGENT"`, "gears login --label <name>"} {
+			for _, want := range []string{"gears -a <name>", "export GEARS_AGENT=<name>", "set GEARS_AGENT=<name>", `$env:GEARS_AGENT`, ".mcp.json", `"GEARS_AGENT"`, "gears init --name <name>", "gears login --label <name>"} {
 				if !strings.Contains(all, want) {
 					t.Fatalf("%s howToChange lacks %q: %v", name, want, a.HowToChange)
 				}

@@ -9,8 +9,8 @@ would produce `gears-cli`):
 
     go build -o "$(go env GOPATH)/bin/gears" .
 
-Then at a workspace root (the directory holding `projects/<repo>`): `gears init`,
-`gears status`. The root is the only `.gears/`; init records the git repos
+Then at a workspace root (the directory holding `projects/<repo>`): `gears init`
+(or `gears init --name <agent>` without a terminal), `gears status`. The root is the only `.gears/`; init records the git repos
 under `projects/` in `.gears/projects.yaml` (`gears projects scan` to refresh,
 `gears projects list` to print). Commands run inside `projects/<repo>` resolve
 to the root and tag session entries and new artifacts with that project;
@@ -21,13 +21,24 @@ say "not a Gears workspace". A nested `.gears` left from an older version is
 ignored (the outermost wins) with one warning naming it, so it can be deleted. For an MCP harness, point it at
 `gears run --dir <workspace root>` with `GEARS_AGENT` set to the agent's label.
 
+`gears init` first asks for the agent's name (GRS-63): the string the agent is
+known by in this workspace. Desk items are addressed to it and sent from it,
+and session log entries and card activity carry it. It takes `--name <label>`,
+else `-a`, else `GEARS_AGENT`; a name saved by an earlier init is kept without
+asking (only `--name` replaces it); otherwise it prompts, suggesting the login
+label. Without a terminal and without a name it stops before creating
+anything, so scripts and agents run `gears init --name <label>`. Names are 1 to
+64 of `a-z 0-9 - _ . +`. The name is saved for this workspace on this machine
+in `.gears/.gearbox/agent` (never committed).
+
 The agent label (GRS-21) comes from, strongest first: `gears -a <name>`, then
-`GEARS_AGENT` (for an MCP server, its `env` in `.mcp.json`), then the label
-saved by `gears login --label <name>` for the API host, else `local`.
+`GEARS_AGENT` (for an MCP server, its `env` in `.mcp.json`), then the name
+`gears init` saved for the workspace, then the label saved by
+`gears login --label <name>` for the API host, else `local`.
 `gears status` and `gears whoami` print the label, where it came from and how
 to change it; their JSON (and the MCP tools) carry
 `agent: {label, source, sourceText, howToChange}` with source `flag`, `env`,
-`login` or `default`.
+`workspace`, `login` or `default`.
 
 Upgrading from gears v2 (GRS-32): uninstall the old `gears`, install this one,
 then at the old workspace root:
