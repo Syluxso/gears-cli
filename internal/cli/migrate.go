@@ -26,10 +26,11 @@ var migrateCmd = &cobra.Command{
   3. runs gears init there (and gears projects scan when projects/ exists)
   4. copies each v2 markdown file (artifacts, ADRs, decisions, stories,
      sessions, context/memory/instructions notes) into .gears/artifacts/ as
-     <prefix>--migrated--<name>.md with a title in its front matter
+     free--migrated--<kind>-<name>.md with a title in its front matter
 
-Prefixes: adr (adr--*, adr_*, decisions/*), story (story--*, story/*), idea
-(idea--*), index (every index.md), free (everything else). The v2 database
+Everything is a free artifact, so v3 shape checks never apply; the v2 kind
+starts the name: adr (adr--*, adr_*, decisions/*), story (story--*, story/*),
+idea (idea--*), index (every index.md), nothing for other notes. The v2 database
 (.gearbox/gears.db), its config and hydrate file, v2's own README and
 gears-init.md, adr_template.md, the shipped adr_example-* files and
 hydrate reports are not migrated; they stay in .gears_v2.

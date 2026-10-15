@@ -59,29 +59,29 @@ func v2Tree(t *testing.T, dir string) {
 // ("" means skipped).
 var want = map[string]string{
 	".gearbox/":                                "",
-	"index.md":                                 "index--migrated--workspace.md",
+	"index.md":                                 "free--migrated--index-workspace.md",
 	"README.md":                                "",
 	"gears-init.md":                            "",
-	"artifacts/index.md":                       "index--migrated--artifacts.md",
-	"artifacts/adr--routing.md":                "adr--migrated--routing.md",
-	"artifacts/adr_old-style.md":               "adr--migrated--old-style.md",
-	"artifacts/adr--use-postgres.md":           "adr--migrated--use-postgres.md",
+	"artifacts/index.md":                       "free--migrated--index-artifacts.md",
+	"artifacts/adr--routing.md":                "free--migrated--adr-routing.md",
+	"artifacts/adr_old-style.md":               "free--migrated--adr-old-style.md",
+	"artifacts/adr--use-postgres.md":           "free--migrated--adr-use-postgres.md",
 	"artifacts/adr_template.md":                "",
 	"artifacts/adr_example-routing.md":         "",
-	"artifacts/idea--dark-mode.md":             "idea--migrated--dark-mode.md",
+	"artifacts/idea--dark-mode.md":             "free--migrated--idea-dark-mode.md",
 	"artifacts/notes.md":                       "free--migrated--notes.md",
 	"artifacts/diagram.png":                    "",
-	"decisions/index.md":                       "index--migrated--decisions.md",
-	"decisions/use-postgres.md":                "adr--migrated--use-postgres-2.md",
-	"story/index.md":                           "index--migrated--story.md",
-	"story/story--login.md":                    "story--migrated--login.md",
-	"sessions/index.md":                        "index--migrated--sessions.md",
+	"decisions/index.md":                       "free--migrated--index-decisions.md",
+	"decisions/use-postgres.md":                "free--migrated--adr-use-postgres-2.md",
+	"story/index.md":                           "free--migrated--index-story.md",
+	"story/story--login.md":                    "free--migrated--story-login.md",
+	"sessions/index.md":                        "free--migrated--index-sessions.md",
 	"sessions/2026-04-01.md":                   "free--migrated--sessions-2026-04-01.md",
 	"sessions/hydrate-report-20260401-1000.md": "",
-	"memory/index.md":                          "index--migrated--memory.md",
+	"memory/index.md":                          "free--migrated--index-memory.md",
 	"memory/projects/api.md":                   "free--migrated--memory-projects-api.md",
-	"context/index.md":                         "index--migrated--context.md",
-	"instructions/index.md":                    "index--migrated--instructions.md",
+	"context/index.md":                         "free--migrated--index-context.md",
+	"instructions/index.md":                    "free--migrated--index-instructions.md",
 }
 
 func checkMapping(t *testing.T, plan *Plan) {
@@ -175,13 +175,13 @@ func TestMigrate(t *testing.T) {
 		t.Fatalf("%d artifacts, want 17: %v", len(byFile), byFile)
 	}
 	titles := map[string]string{
-		"adr--migrated--routing.md":              "Route Organization Pattern",
-		"adr--migrated--use-postgres-2.md":       "Use Postgres",
-		"story--migrated--login.md":              "Login with email",
+		"free--migrated--adr-routing.md":              "Route Organization Pattern",
+		"free--migrated--adr-use-postgres-2.md":       "Use Postgres",
+		"free--migrated--story-login.md":              "Login with email",
 		"free--migrated--notes.md":               "notes",
-		"index--migrated--instructions.md":       "Coding standards",
+		"free--migrated--index-instructions.md":       "Coding standards",
 		"free--migrated--sessions-2026-04-01.md": "Session 2026-04-01",
-		"idea--migrated--dark-mode.md":           "Dark mode",
+		"free--migrated--idea-dark-mode.md":           "Dark mode",
 	}
 	for file, title := range titles {
 		a, ok := byFile[file]
@@ -201,7 +201,7 @@ func TestMigrate(t *testing.T) {
 			t.Errorf("%s: prefix %q / row %q", it.File, it.Prefix, byFile[it.File].Prefix)
 		}
 	}
-	data, err := os.ReadFile(filepath.Join(p.ArtifactsDir(), "story--migrated--login.md"))
+	data, err := os.ReadFile(filepath.Join(p.ArtifactsDir(), "free--migrated--story-login.md"))
 	if err != nil {
 		t.Fatal(err)
 	}

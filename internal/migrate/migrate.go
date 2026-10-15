@@ -16,8 +16,8 @@
 //
 // Migration renames .gears to .gears_v2, zips that tree to .gears_v2.zip,
 // binds a v3 workspace in the same directory and copies each markdown file
-// into .gears/artifacts/ as <prefix>--migrated--<name>.md with a title in its
-// front matter (plus status, date and migrated_from). The old database and
+// into .gears/artifacts/ as free--migrated--<kind>-<name>.md with a title in
+// its front matter (plus date and migrated_from). All free: no shape checks. The old database and
 // v2-only machinery are left behind in .gears_v2. Re-running is safe: names
 // already present are kept.
 package migrate
@@ -186,9 +186,6 @@ func Run(plan *Plan) (*Result, error) {
 			return nil, err
 		}
 		front := [][2]string{{"title", it.Title}}
-		if it.Prefix == "adr" || it.Prefix == "story" {
-			front = append(front, [2]string{"status", "migrated"})
-		}
 		if st, err := os.Stat(src); err == nil {
 			front = append(front, [2]string{"date", st.ModTime().Format("2006-01-02")})
 		}
@@ -308,12 +305,17 @@ func classify(rel string) Item {
 			name = strings.ReplaceAll(dirPart, "/", "-") + "-" + name
 		}
 	}
+	// Everything lands as free (Darryn: no shape checks on migrated work);
+	// the v2 kind stays visible as the start of the name.
+	if prefix != "free" {
+		name = prefix + "-" + name
+	}
 	slug := project.Slugify(name)
 	if slug == "" {
 		slug = "untitled"
 	}
-	it.Action, it.Prefix = "create", prefix
-	it.File = prefix + "--" + Marker + "--" + slug + ".md"
+	it.Action, it.Prefix = "create", "free"
+	it.File = "free--" + Marker + "--" + slug + ".md"
 	it.Title = strings.ReplaceAll(strings.ReplaceAll(name, "-", " "), "_", " ")
 	return it
 }

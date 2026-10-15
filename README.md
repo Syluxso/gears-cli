@@ -38,17 +38,18 @@ then at the old workspace root:
 It renames `.gears` to `.gears_v2` (kept, for restoring), writes
 `.gears_v2.zip` (an archive of it: store it or delete it), runs `gears init`
 (and `gears projects scan` when `projects/` exists), and copies each v2
-markdown file into `.gears/artifacts/` as `<prefix>--migrated--<name>.md`,
-body kept, with `title`, `date`, `status` (adr, story) and `migrated_from`
-added to its front matter:
+markdown file into `.gears/artifacts/` as a free artifact,
+`free--migrated--<kind>-<name>.md` (so no v3 shape checks apply), body kept,
+with `title`, `date` and `migrated_from` added to its front matter. The v2
+kind starts the name:
 
-| v2 file                                        | v3 prefix |
+| v2 file                                        | name starts |
 |------------------------------------------------|-----------|
 | `artifacts/adr--*.md`, `artifacts/adr_*.md`, `decisions/*.md` | `adr` |
 | `story/story--*.md`, `story/*.md`              | `story`   |
 | `*/idea--*.md`                                 | `idea`    |
 | every `index.md` (name: its folder, root is `workspace`) | `index` |
-| anything else (`sessions/*.md`, `memory/**`, `artifacts/notes.md`, ...) | `free` |
+| anything else (`sessions/*.md`, `memory/**`, `artifacts/notes.md`, ...) | its folder, e.g. `sessions-` (none for `artifacts/`) |
 
 Not migrated, left in `.gears_v2`: `.gearbox/` (config, `gears.db`,
 hydrate.md), v2's `README.md` and `gears-init.md`, `adr_template.md`, the
