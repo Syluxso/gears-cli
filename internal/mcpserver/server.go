@@ -22,8 +22,9 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 		verbs.Status)
 	add(s, c, "arch", "The workspace's architecture artifact, arch--primary.md, in full: the master design doc (context, boundaries, current shape, open questions). Free-form, one per workspace; edit the file, then artifact_reconcile. status carries the same body. missing with a hint when the workspace has none (artifact_new prefix arch writes the stub).", verbs.Arch)
 
-	add(s, c, "desk_list", "Open desk items addressed to this agent or to anyone. Set all to include closed items.", verbs.DeskList)
-	add(s, c, "desk_send", "Place an item on a desk. Type is lifecycle: info closes when read; ask closes when answered; event closes when dismissed; work closes when done; handoff never closes.", verbs.DeskSend)
+	add(s, c, "people_list", "The people of this workspace (its members) from gears-api: id, name, email, role and the agent labels their devices use. Cached locally; offline it answers the cached list with stale: true. Call it before desk_send with assignedTo, to turn a name like Bob into his id.", verbs.PeopleList)
+	add(s, c, "desk_list", "Open desk items for this agent: addressed to it or to another label of the same person, assigned to or made by that person, or addressed to nobody. Set all to include closed items.", verbs.DeskList)
+	add(s, c, "desk_send", "Place an item on a desk. Type is lifecycle: info closes when read; ask closes when answered; event closes when dismissed; work closes when done; handoff never closes. to is an agent label. For a person (\"make a desk item for Bob\"): call people_list first, then pass that person's id as assignedTo; with to empty the item is for that person and any of their agents. Never guess an id. The author is set by gears-api when the item syncs.", verbs.DeskSend)
 	add(s, c, "desk_read", "Read one item. Reading an info item consumes it.", verbs.DeskRead)
 	add(s, c, "desk_answer", "Close an ask with a reply. The reply is required.", verbs.DeskAnswer)
 	add(s, c, "desk_done", "Close a work item.", verbs.DeskDone)

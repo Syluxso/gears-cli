@@ -381,6 +381,30 @@ func (c *Client) ListProjects(ctx context.Context, ws string) ([]Project, error)
 	return out, err
 }
 
+// Person is one person of a workspace (GRS-36): a member, with the agent
+// labels their devices use.
+type Person struct {
+	ID     string   `json:"id"`
+	Name   string   `json:"name"`
+	Email  string   `json:"email"`
+	Role   string   `json:"role"`
+	Labels []string `json:"agentLabels"`
+}
+
+// PeopleOut is GET /workspaces/:ws/people: the people, and which one the
+// caller is.
+type PeopleOut struct {
+	Me     string   `json:"me"`
+	People []Person `json:"people"`
+}
+
+// People lists a workspace's people.
+func (c *Client) People(ctx context.Context, ws string) (*PeopleOut, error) {
+	var out PeopleOut
+	_, err := c.Do(ctx, http.MethodGet, "/api/v1/workspaces/"+urlQuery(ws)+"/people", nil, &out)
+	return &out, err
+}
+
 func (c *Client) ListWorkspaces(ctx context.Context) ([]Workspace, error) {
 	var out []Workspace
 	_, err := c.Do(ctx, http.MethodGet, "/api/v1/workspaces", nil, &out)

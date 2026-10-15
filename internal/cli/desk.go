@@ -132,7 +132,7 @@ func init() {
 	deskSendCmd.Flags().StringVarP(&deskSendType, "type", "t", "info", "info | ask | event | work | handoff")
 	deskSendCmd.Flags().StringVar(&deskTo, "to", "", "agent label (default: anyone)")
 	deskSendCmd.Flags().StringVar(&deskRef, "ref", "", "optional pointer: card key, run id, artifact file")
-	deskSendCmd.Flags().StringVar(&deskAssign, "assign", "", "user id the item is for; with no --to, that person and any of their agents")
+	deskSendCmd.Flags().StringVar(&deskAssign, "assign", "", "person id the item is for (see gears people); with no --to, that person and any of their agents")
 
 	read := deskVerb("read <id>", "Read an item; info closes when read", 1, func(c verbs.Ctx, id string, _ []string) (*verbs.DeskItem, error) {
 		return verbs.DeskRead(c, verbs.DeskIDIn{ID: id})

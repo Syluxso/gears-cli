@@ -218,7 +218,7 @@ func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 	down := make(chan bool, 1) // buffered: an early return never strands it
 	go func() { down <- c.cardsDown() }()
 
-	items, err := desk.List(c.Project, desk.Filter{Agent: out.Agent.Label})
+	items, err := desk.List(c.Project, mine(c, out.Agent.Label))
 	if err != nil {
 		return nil, err
 	}
@@ -361,7 +361,9 @@ type DeskListOut struct {
 }
 
 func DeskList(c Ctx, in DeskListIn) (*DeskListOut, error) {
-	items, err := desk.List(c.Project, desk.Filter{Agent: c.agent(), All: in.All, Type: in.Type})
+	f := mine(c, c.agent())
+	f.All, f.Type = in.All, in.Type
+	items, err := desk.List(c.Project, f)
 	if err != nil {
 		return nil, err
 	}
@@ -377,10 +379,13 @@ type DeskSendIn struct {
 	To   string `json:"to,omitempty" jsonschema:"Agent label to address. Empty means anyone in the tenant."`
 	Text string `json:"text" jsonschema:"The item. For handoff: what was tried, the result, what comes next."`
 	Ref  string `json:"ref,omitempty" jsonschema:"Optional pointer: a card key, run id, or artifact file."`
-	AssignedTo string `json:"assignedTo,omitempty" jsonschema:"The user (account id) the item is for; empty for nobody in particular."`
+	AssignedTo string `json:"assignedTo,omitempty" jsonschema:"The person the item is for: an id from people_list (call it first; never guess one). With to empty the item is for that person and any of their agents."`
 }
 
 func DeskSend(c Ctx, in DeskSendIn) (*DeskItem, error) {
+	if err := checkAssignee(c, in.AssignedTo); err != nil {
+		return nil, err
+	}
 	it, err := desk.SendAssigned(c.Project, in.Type, c.agent(), in.To, in.Text, in.Ref, in.AssignedTo)
 	if err != nil {
 		return nil, err

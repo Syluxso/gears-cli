@@ -99,6 +99,12 @@ type Filter struct {
 	Agent string // show items addressed to this agent or to anyone
 	All   bool   // include closed items
 	Type  string
+	// GRS-36, with Agent: the person this install is and the other labels
+	// they use. An item is theirs when it is assigned to User, authored by
+	// User, or addressed to Agent or one of Labels; an item addressed to
+	// nobody and assigned to nobody is everyone's.
+	User   string
+	Labels []string
 }
 
 // List returns items, oldest first. Handoffs are always included while open.
@@ -118,8 +124,19 @@ func List(p *project.Project, f Filter) ([]Item, error) {
 		q += ` AND state = 'open'`
 	}
 	if f.Agent != "" {
-		q += ` AND (to_agent = '' OR to_agent = ?)`
+		q += ` AND ((to_agent = '' AND assigned_to = '') OR to_agent = ?`
 		args = append(args, f.Agent)
+		for _, l := range f.Labels {
+			if l = strings.TrimSpace(l); l != "" {
+				q += ` OR to_agent = ?`
+				args = append(args, l)
+			}
+		}
+		if u := strings.TrimSpace(f.User); u != "" {
+			q += ` OR assigned_to = ? OR author = ?`
+			args = append(args, u, u)
+		}
+		q += `)`
 	}
 	if f.Type != "" {
 		q += ` AND type = ?`
