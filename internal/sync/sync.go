@@ -464,7 +464,8 @@ func push(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, ws
 	}
 	for _, a := range arts {
 		if a.FilePresent {
-			if b, err := os.ReadFile(a.Path); err == nil {
+			// An empty file has no body to upload (the API refuses one).
+			if b, err := os.ReadFile(a.Path); err == nil && len(b) > 0 {
 				if h := artifact.Hash(string(b)); h != uploaded[a.ID] {
 					contentFor = append(contentFor, contentUp{a: a, body: b, hash: h})
 				}
@@ -764,6 +765,9 @@ func apply(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, c
 			body, ok, err := c.GetArtifactContent(ctx, a.ID)
 			if err != nil {
 				r.Notes = append(r.Notes, "content "+file+": "+err.Error())
+			} else if ok && len(body) == 0 && localHash != "" && localHash != artifact.Hash("") {
+				// Never an empty answer over a body here.
+				r.Notes = append(r.Notes, "content "+file+": the API answered an empty body; the file here is kept")
 			} else if ok {
 				if err := os.MkdirAll(p.ArtifactsDir(), 0o755); err == nil && os.WriteFile(path, body, 0o644) == nil {
 					r.ContentDown++

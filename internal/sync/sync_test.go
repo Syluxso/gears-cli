@@ -897,3 +897,42 @@ func TestSyncStrayArchStubGivesWay(t *testing.T) {
 		srv.Close()
 	}
 }
+
+// An empty body from the API never overwrites a body here, and an empty
+// file is not uploaded (the API refuses one).
+func TestSyncKeepsBodyOverEmptyAnswer(t *testing.T) {
+	res, err := project.Init(t.TempDir(), "ws", "WS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := res.Project
+	p.Workspace = p.ID
+	f := &fakeAPI{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	cl := api.Anonymous(srv.URL)
+	arch, _, err := artifact.InitArch(p, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(arch.Path)
+	f.content = map[string][]byte{arch.ID: {}}
+	f.queue([]api.Change{artifactRow(t, arch.ID, "arch", "primary", "", "something else\n")})
+	r, err := Run(context.Background(), cl, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(arch.Path)
+	if len(after) == 0 || string(after) != string(before) {
+		t.Fatalf("local body replaced by an empty answer: %q (notes %v)", after, r.Notes)
+	}
+	if err := os.WriteFile(arch.Path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := artifact.Reconcile(p); err != nil {
+		t.Fatal(err)
+	}
+	if r, err = Run(context.Background(), cl, p); err != nil || r.ContentUp != 0 {
+		t.Fatalf("empty file uploaded: %+v %v", r, err)
+	}
+}
