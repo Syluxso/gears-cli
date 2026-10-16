@@ -134,6 +134,12 @@ var columns = []struct{ table, column, def string }{
 	// the API and pulled back; assigned_to the user it is for ("" nobody).
 	{"desk_items", "author", "TEXT NOT NULL DEFAULT ''"},
 	{"desk_items", "assigned_to", "TEXT NOT NULL DEFAULT ''"},
+	// GRS-69: a canceled record run's reason, who and via what.
+	{"record_runs", "cancel_reason", "TEXT NOT NULL DEFAULT ''"},
+	{"record_runs", "canceled_by", "TEXT NOT NULL DEFAULT ''"},
+	{"record_runs", "canceled_label", "TEXT NOT NULL DEFAULT ''"},
+	{"record_runs", "canceled_via", "TEXT NOT NULL DEFAULT ''"},
+	{"record_runs", "canceled_at", "TEXT NOT NULL DEFAULT ''"},
 }
 
 // backfill runs once, right after its column is added: rows from before the

@@ -24,6 +24,7 @@ var (
 	reWsRuns  = regexp.MustCompile(`^/api/v1/workspaces/([^/]+)/runs$`)
 	reRun     = regexp.MustCompile(`^/api/v1/runs/([^/]+)$`)
 	reRunStep = regexp.MustCompile(`^/api/v1/runs/([^/]+)/steps/([^/]+)/(complete|skip)$`)
+	reRunStop = regexp.MustCompile(`^/api/v1/runs/([^/]+)/cancel$`)
 )
 
 // RunBodies are the request bodies of every run write, in order.
@@ -50,7 +51,7 @@ func (s *Server) getRun(id string) *api.Run {
 
 func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 	path := r.URL.Path
-	if !reWsRuns.MatchString(path) && !reRun.MatchString(path) && !reRunStep.MatchString(path) {
+	if !reWsRuns.MatchString(path) && !reRun.MatchString(path) && !reRunStep.MatchString(path) && !reRunStop.MatchString(path) {
 		return false
 	}
 	s.mu.Lock()
@@ -139,6 +140,33 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 		if r.URL.Query().Get("refresh") == "true" && s.RunbooksOff {
 			run.Stale, run.Note = true, "not refreshed: runbooks are not available on this gears-api; this is the gears record"
 		}
+		ok(http.StatusOK, run)
+	case reRunStop.MatchString(path): // GRS-69
+		run := s.getRun(reRunStop.FindStringSubmatch(path)[1])
+		if run == nil {
+			problem(w, 404, "gears.not_found", "not found")
+			return true
+		}
+		var in api.CancelIn
+		b, _ := json.Marshal(body)
+		_ = json.Unmarshal(b, &in)
+		if strings.TrimSpace(in.Reason) == "" {
+			problem(w, 400, "gears.bad_request", "stopping a run needs a reason")
+			return true
+		}
+		if run.Status != "running" {
+			problem(w, 409, "run.finished", "run is "+run.Status)
+			return true
+		}
+		for i := range run.Steps {
+			if run.Steps[i].Status == "current" {
+				run.Steps[i].Status, run.Steps[i].FinishedAt, run.Steps[i].DoneLabel = "canceled", &now, in.Agent
+			}
+		}
+		run.Status, run.CurrentStep, run.FinishedAt, run.UpdatedAt = "canceled", "", &now, now
+		run.CancelReason, run.CanceledBy, run.CanceledLabel, run.CanceledVia, run.CanceledAt = in.Reason, "u-tester", in.Agent, "gears-api", &now
+		run.Version++
+		s.saveRun(run, in.Agent)
 		ok(http.StatusOK, run)
 	default:
 		m := reRunStep.FindStringSubmatch(path)

@@ -3,7 +3,8 @@
 Usage: python -I fake-orchestrator.py <port> <token>
 
 Serves POST /api/v1/runs, GET /api/v1/runs/<id> and
-POST /api/v1/runs/<id>/steps/<step>/(complete|skip) on an in-memory model.
+POST /api/v1/runs/<id>/steps/<step>/(complete|skip) and
+POST /api/v1/runs/<id>/cancel (GRS-69) on an in-memory model.
 Requires Authorization: Bearer <token> and the three X-Byz-* headers, as
 the real service does for a trusted caller. A registered runbook (ref) has
 steps backup, migrate, verify. GET /healthz answers ok.
@@ -100,6 +101,20 @@ class H(BaseHTTPRequestHandler):
                                      "status": "current" if i == 0 else "pending", **({"startedAt": t} if i == 0 else {})})
             RUNS[run["runId"]] = run
             return self.send(201, {"created": True, "run": run})
+        if len(parts) == 6 and parts[5] == "cancel" and parts[4] in RUNS:  # GRS-69 (GRS-68 there)
+            run, t = RUNS[parts[4]], now()
+            if not (b.get("reason") or "").strip():
+                return self.problem(422, "runbook.invalid", "reason required")
+            if run["status"] != "running":
+                return self.problem(409, "run.finished", "run is " + run["status"])
+            for s in run["steps"]:
+                if s["status"] == "current":
+                    s.update({"status": "canceled", "finishedAt": t, "doneBy": self.headers["X-Byz-Actor"],
+                              "doneLabel": b.get("agentLabel", ""), "doneVia": "gears-api"})
+            run.update({"status": "canceled", "currentStep": "", "finishedAt": t, "updatedAt": t, "version": run["version"] + 1,
+                        "cancelReason": b["reason"], "canceledBy": self.headers["X-Byz-Actor"], "canceledLabel": b.get("agentLabel", ""),
+                        "canceledVia": "gears-api", "canceledAt": t})
+            return self.send(200, run)
         if len(parts) == 8 and parts[5] == "steps" and parts[4] in RUNS:
             run, step, verb = RUNS[parts[4]], parts[6], parts[7]
             if run["status"] != "running":

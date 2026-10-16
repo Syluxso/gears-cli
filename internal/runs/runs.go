@@ -60,14 +60,17 @@ func SaveDB(db *sql.DB, r api.Run) (bool, error) {
 		return false, err
 	}
 	if _, err := tx.Exec(`INSERT INTO record_runs (id, workspace_id, runbook, status, current_step, card_key, agent_label, started_by, version, started_at, finished_at, updated_at,
-			runbook_ref, runbook_version, internal, started_via)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			runbook_ref, runbook_version, internal, started_via, cancel_reason, canceled_by, canceled_label, canceled_via, canceled_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET workspace_id = excluded.workspace_id, runbook = excluded.runbook, status = excluded.status,
 			current_step = excluded.current_step, card_key = excluded.card_key, agent_label = excluded.agent_label, started_by = excluded.started_by,
 			version = excluded.version, started_at = excluded.started_at, finished_at = excluded.finished_at, updated_at = excluded.updated_at,
-			runbook_ref = excluded.runbook_ref, runbook_version = excluded.runbook_version, internal = excluded.internal, started_via = excluded.started_via`,
+			runbook_ref = excluded.runbook_ref, runbook_version = excluded.runbook_version, internal = excluded.internal, started_via = excluded.started_via,
+			cancel_reason = excluded.cancel_reason, canceled_by = excluded.canceled_by, canceled_label = excluded.canceled_label,
+			canceled_via = excluded.canceled_via, canceled_at = excluded.canceled_at`,
 		r.ID, r.WorkspaceID, r.Runbook, r.Status, r.CurrentStep, r.CardKey, r.AgentLabel, r.StartedBy, r.Version,
-		ts(r.StartedAt), tsp(r.FinishedAt), ts(r.UpdatedAt), r.RunbookRef, r.RunbookVer, r.Internal, r.StartedVia); err != nil {
+		ts(r.StartedAt), tsp(r.FinishedAt), ts(r.UpdatedAt), r.RunbookRef, r.RunbookVer, r.Internal, r.StartedVia,
+		r.CancelReason, r.CanceledBy, r.CanceledLabel, r.CanceledVia, tsp(r.CanceledAt)); err != nil {
 		return false, err
 	}
 	if _, err := tx.Exec(`DELETE FROM record_run_steps WHERE run_id = ?`, r.ID); err != nil {
@@ -122,7 +125,7 @@ func List(p *project.Project, f Filter) ([]api.Run, error) {
 		status = "running"
 	}
 	rows, err := db.Query(`SELECT id, workspace_id, runbook, status, current_step, card_key, agent_label, started_by, version, started_at, finished_at, updated_at,
-		runbook_ref, runbook_version, internal, started_via
+		runbook_ref, runbook_version, internal, started_via, cancel_reason, canceled_by, canceled_label, canceled_via, canceled_at
 		FROM record_runs WHERE (? = '' OR status = ?) AND (? = '' OR lower(card_key) = lower(?)) AND (? = '' OR agent_label = ?)
 		  AND (? = '' OR lower(runbook) = lower(?) OR lower(runbook_ref) = lower(?))
 		ORDER BY started_at DESC, id DESC`, status, status, f.Card, f.Card, f.Agent, f.Agent, f.Runbook, f.Runbook, f.Runbook)
@@ -132,9 +135,10 @@ func List(p *project.Project, f Filter) ([]api.Run, error) {
 	var out []api.Run
 	for rows.Next() {
 		var r api.Run
-		var started, finished, updated string
+		var started, finished, updated, canceled string
 		if err := rows.Scan(&r.ID, &r.WorkspaceID, &r.Runbook, &r.Status, &r.CurrentStep, &r.CardKey, &r.AgentLabel, &r.StartedBy, &r.Version,
-			&started, &finished, &updated, &r.RunbookRef, &r.RunbookVer, &r.Internal, &r.StartedVia); err != nil {
+			&started, &finished, &updated, &r.RunbookRef, &r.RunbookVer, &r.Internal, &r.StartedVia,
+			&r.CancelReason, &r.CanceledBy, &r.CanceledLabel, &r.CanceledVia, &canceled); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -144,7 +148,7 @@ func List(p *project.Project, f Filter) ([]api.Run, error) {
 		if t := parse(updated); t != nil {
 			r.UpdatedAt = *t
 		}
-		r.FinishedAt = parse(finished)
+		r.FinishedAt, r.CanceledAt = parse(finished), parse(canceled)
 		out = append(out, r)
 	}
 	rows.Close()

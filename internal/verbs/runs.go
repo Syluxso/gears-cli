@@ -177,6 +177,43 @@ func RunbookStepSkip(c Ctx, in RunbookStepSkipIn) (*api.RunStepOut, error) {
 	return c.stepRun(in.RunPick, false, api.RunStepIn{Reason: in.Reason})
 }
 
+// RunbookStopIn stops a run (GRS-69); the same arguments as the remote
+// MCP's runbook_stop.
+type RunbookStopIn struct {
+	Run    string `json:"run" jsonschema:"Run id (run-<uuid>, or a prefix of a cached one), from runbook_start or runbook_runs."`
+	Reason string `json:"reason" jsonschema:"Why the run is stopped. Required (at most 2000 characters); it stays on the run."`
+	AgentOpt
+}
+
+// RunbookStop cancels a running run through gears-api (byz-orchestrator
+// cancels it: the current step and the run become canceled) and caches the
+// answer.
+func RunbookStop(c Ctx, in RunbookStopIn) (*api.Run, error) {
+	if strings.TrimSpace(in.Run) == "" {
+		return nil, errors.New("run required: its id (run-<uuid>) or a cached prefix")
+	}
+	if strings.TrimSpace(in.Reason) == "" {
+		return nil, errors.New("stopping a run needs a reason")
+	}
+	cl, err := runsClient()
+	if err != nil {
+		return nil, err
+	}
+	agent := c.agentOr(in.Agent)
+	id, err := c.pickRun(cl, in.Run, agent)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := runCtx()
+	defer cancel()
+	out, err := cl.CancelRun(ctx, id, api.CancelIn{Reason: strings.TrimSpace(in.Reason), Agent: agent})
+	if err != nil {
+		return nil, err
+	}
+	c.cacheRun(out)
+	return out, nil
+}
+
 type RunbookStatusIn struct {
 	Run     string `json:"run,omitempty" jsonschema:"Run id (or a cached prefix) for one run, from the gears record. Omit to list the workspace's runs."`
 	Refresh bool   `json:"refresh,omitempty" jsonschema:"With run: gears-api reads the live state from the orchestrator first; when it cannot, the record answers with stale: true and a note."`

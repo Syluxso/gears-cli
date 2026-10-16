@@ -393,6 +393,14 @@ echo "== GRS-73: unadopt"
 ( cd "$WS" && "$G" runbook unadopt starter-copy --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['deleted'] and o['runbook']=='starter-copy', o; print('ok: unadopted starter-copy')"
 ( cd "$WS" && "$G" runbook list --json ) | python -c "import json,sys; o=json.load(sys.stdin); a=[r['slug'] for r in o['adopted']]; assert a==['single-ticket-development'], o; print('ok: adopted', a)"
 ( cd "$C" && "$G" sync >/dev/null && "$G" runbook list --json ) | python -c "import json,sys; o=json.load(sys.stdin); a=[r['slug'] for r in o['adopted']]; assert a==['single-ticket-development'], o; print('ok: clone dropped the copy', a)"
+echo "== GRS-69: stop a running run with a reason; the clone sees it canceled"
+SRID=$( cd "$WS" && "$G" runbook runs --runbook single-ticket-development --status running --json | python -c "import json,sys; r=json.load(sys.stdin)['runs']; assert len(r)==1, r; print(r[0]['id'])" )
+if ( cd "$WS" && "$G" runbook stop "$SRID" >"$WORK/rb.out" 2>&1 ); then cat "$WORK/rb.out"; fail "stop without a reason accepted"; fi
+( cd "$WS" && "$G" runbook stop "$SRID" --reason "started the wrong runbook" --json ) | python -c "import json,sys; r=json.load(sys.stdin); assert r['status']=='canceled' and r['cancelReason']=='started the wrong runbook' and r['canceledLabel']=='claude-code+local' and r['steps'][0]['status']=='canceled', r; print('ok: run stopped')"
+if ( cd "$WS" && "$G" runbook stop "$SRID" --reason again >"$WORK/rb.out" 2>&1 ); then cat "$WORK/rb.out"; fail "stopped twice"; fi
+grep -q "canceled" "$WORK/rb.out" || { cat "$WORK/rb.out"; fail "second stop does not say the run is finished"; }
+( cd "$C" && "$G" sync >/dev/null && "$G" runbook show "$SRID" --json ) | python -c "import json,sys; r=json.load(sys.stdin)['run']; assert r['status']=='canceled' and r['cancelReason']=='started the wrong runbook', r; print('ok: clone sees the run canceled')"
+
 echo "== second sync is a no-op"
 # The push window includes the last push's second (stamps are to the
 # second), so the first sync after a write in that second re-sends it once.

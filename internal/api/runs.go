@@ -36,7 +36,13 @@ type Run struct {
 	StartedAt   time.Time  `json:"startedAt"`
 	FinishedAt  *time.Time `json:"finishedAt,omitempty"`
 	UpdatedAt   time.Time  `json:"updatedAt"`
-	Steps       []RunStep  `json:"steps"`
+	// GRS-69: set on a canceled run (stopped on purpose).
+	CancelReason  string     `json:"cancelReason,omitempty"`
+	CanceledBy    string     `json:"canceledBy,omitempty"`
+	CanceledLabel string     `json:"canceledLabel,omitempty"`
+	CanceledVia   string     `json:"canceledVia,omitempty"`
+	CanceledAt    *time.Time `json:"canceledAt,omitempty"`
+	Steps         []RunStep  `json:"steps"`
 	// Stale: a refresh was asked for and could not happen; Note says why
 	// (GRS-71). Not cached.
 	Stale bool   `json:"stale,omitempty"`
@@ -118,6 +124,20 @@ func (c *Client) StepRun(ctx context.Context, runID, step string, complete bool,
 	}
 	var out RunStepOut
 	_, err := c.Do(ctx, "POST", "/api/v1/runs/"+url.PathEscape(runID)+"/steps/"+url.PathEscape(step)+"/"+verb, in, &out)
+	return &out, err
+}
+
+// CancelIn stops a run (GRS-69): reason required.
+type CancelIn struct {
+	Reason string `json:"reason"`
+	Agent  string `json:"agent,omitempty"`
+}
+
+// CancelRun stops a running run with a reason; the answer is the canceled
+// run from the gears record.
+func (c *Client) CancelRun(ctx context.Context, runID string, in CancelIn) (*Run, error) {
+	var out Run
+	_, err := c.Do(ctx, "POST", "/api/v1/runs/"+url.PathEscape(runID)+"/cancel", in, &out)
 	return &out, err
 }
 

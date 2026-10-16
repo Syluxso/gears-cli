@@ -227,7 +227,14 @@ func printRun(r *api.Run) {
 		fmt.Printf("  agent %s", r.AgentLabel)
 	}
 	fmt.Println()
-	marks := map[string]string{"pending": "·", "current": "▶", "completed": "✓", "skipped": "↷"}
+	if r.Status == "canceled" {
+		by := r.CanceledLabel
+		if by == "" {
+			by = r.CanceledVia
+		}
+		fmt.Printf("  stopped by %s: %s\n", by, r.CancelReason)
+	}
+	marks := map[string]string{"pending": "·", "current": "▶", "completed": "✓", "skipped": "↷", "canceled": "✕"}
 	for _, s := range r.Steps {
 		line := fmt.Sprintf("  %-2s %02d  %-12s %s", marks[s.Status], s.Position, s.Kind, s.StepID)
 		if s.Title != "" && s.Title != s.StepID {
@@ -382,6 +389,31 @@ var runbookSkipCmd = &cobra.Command{
 			return nil
 		}
 		printStepOut(out)
+		return nil
+	},
+}
+
+var runbookStopCmd = &cobra.Command{
+	Use:   "stop <run> --reason <why>",
+	Short: "Stop (cancel) a running run, with a reason (through gears-api)",
+	Long: `Cancels a running run through gears-api, which asks byz-orchestrator to
+cancel it: the current step and the run become canceled, later steps stay
+pending, and the reason stays on the run. <run> is the run id or a prefix of
+a cached one. A finished run is refused.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := ctx()
+		if err != nil {
+			return err
+		}
+		out, err := verbs.RunbookStop(c, verbs.RunbookStopIn{Run: args[0], Reason: rbReason})
+		if err != nil {
+			return err
+		}
+		if emit(out) {
+			return nil
+		}
+		printRun(out)
 		return nil
 	},
 }
@@ -659,6 +691,7 @@ func init() {
 		c.Flags().StringVar(&rbNote, "note", "", "a note kept on the step")
 	}
 	runbookSkipCmd.Flags().StringVar(&rbReason, "reason", "", "why the step is skipped (required)")
+	runbookStopCmd.Flags().StringVar(&rbReason, "reason", "", "why the run is stopped (required)")
 	runbookStatusCmd.Flags().StringVar(&rbStatus, "status", "", "list filter: running, completed, ...")
 	runbookStatusCmd.Flags().StringVar(&rbTarget, "card", "", "list filter: card key")
 	runbookStatusCmd.Flags().BoolVar(&rbRefresh, "refresh", false, "one run: read the live state from the orchestrator first (stale when it cannot)")
@@ -672,6 +705,6 @@ func init() {
 
 	runbookStepCmd.AddCommand(runbookStepAddCmd, runbookStepUpdateCmd, runbookStepRemoveCmd, runbookStepMoveCmd)
 	runbookCmd.AddCommand(runbookNewCmd, runbookCopyCmd, runbookUpdateCmd, runbookDeleteCmd, runbookListCmd, runbookShowCmd, runbookStartCmd,
-		runbookStepCmd, runbookCompleteCmd, runbookSkipCmd, runbookStatusCmd, runbookRunsCmd)
+		runbookStepCmd, runbookCompleteCmd, runbookSkipCmd, runbookStopCmd, runbookStatusCmd, runbookRunsCmd)
 	root.AddCommand(runbookCmd)
 }

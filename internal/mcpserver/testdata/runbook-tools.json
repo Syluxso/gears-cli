@@ -9,6 +9,7 @@
     "runbook_show": {"required": ["runbook"], "args": ["runbook"]},
     "runbook_start": {"required": ["runbook"], "args": ["cardKey", "idempotencyKey", "runbook", "steps"]},
     "runbook_status": {"required": [], "args": ["card", "refresh", "run", "status"]},
+    "runbook_stop": {"required": ["reason", "run"], "args": ["reason", "run"]},
     "runbook_step_complete": {"required": [], "args": ["evidence", "note", "run", "step"]},
     "runbook_step_skip": {"required": ["reason"], "args": ["note", "reason", "run", "step"]},
     "runbook_unadopt": {"required": ["runbook"], "args": ["runbook"]}
