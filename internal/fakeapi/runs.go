@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -65,6 +67,10 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(v)
 	}
+	if r.Method == http.MethodPost && s.RunbooksOff {
+		problem(w, 501, "gears.runbooks_unavailable", "runbooks are not available on this gears-api")
+		return true
+	}
 	switch {
 	case reWsRuns.MatchString(path) && r.Method == http.MethodPost:
 		ws := reWsRuns.FindStringSubmatch(path)[1]
@@ -92,12 +98,36 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 		s.saveRun(run, in.Agent)
 		ok(http.StatusCreated, api.RunStartOut{Created: true, Run: run})
 	case reWsRuns.MatchString(path):
-		status := r.URL.Query().Get("status")
+		// GRS-71: filters, newest first, limit and a cursor (an index here).
+		q := r.URL.Query()
+		status := q.Get("status")
+		if status == "active" {
+			status = "running"
+		}
 		out := []api.Run{}
 		for id := range s.rows["runs"] {
-			if run := s.getRun(id); run != nil && (status == "" || run.Status == status) {
-				out = append(out, *run)
+			run := s.getRun(id)
+			if run == nil || (status != "" && run.Status != status) || (q.Get("agent") != "" && run.AgentLabel != q.Get("agent")) ||
+				(q.Get("card") != "" && !strings.EqualFold(run.CardKey, q.Get("card"))) ||
+				(q.Get("runbook") != "" && run.Runbook != q.Get("runbook") && run.RunbookRef != q.Get("runbook")) {
+				continue
 			}
+			out = append(out, *run)
+		}
+		sort.Slice(out, func(i, j int) bool {
+			if !out[i].StartedAt.Equal(out[j].StartedAt) {
+				return out[i].StartedAt.After(out[j].StartedAt)
+			}
+			return out[i].ID > out[j].ID
+		})
+		from, _ := strconv.Atoi(q.Get("cursor"))
+		if from > len(out) {
+			from = len(out)
+		}
+		out = out[from:]
+		if limit, _ := strconv.Atoi(q.Get("limit")); limit > 0 && len(out) > limit {
+			out = out[:limit]
+			w.Header().Set("X-Next-Cursor", strconv.Itoa(from+limit))
 		}
 		ok(http.StatusOK, out)
 	case reRun.MatchString(path):
@@ -105,6 +135,9 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 		if run == nil {
 			problem(w, 404, "gears.not_found", "not found")
 			return true
+		}
+		if r.URL.Query().Get("refresh") == "true" && s.RunbooksOff {
+			run.Stale, run.Note = true, "not refreshed: runbooks are not available on this gears-api; this is the gears record"
 		}
 		ok(http.StatusOK, run)
 	default:

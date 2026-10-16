@@ -186,16 +186,19 @@ func printStatusBrief(w io.Writer, out *verbs.StatusOut, width int, colour bool)
 	more(len(out.Cards.Ready)-statusShown, " ready", "gears card list --state "+shellQuote(ready))
 
 	fmt.Fprintln(w)
-	head("runs", fmt.Sprintf("%d active", len(out.Runs)))
+	head("runs", fmt.Sprintf("%d active, %d mine", len(out.Runs), len(out.MyRuns)))
 	for i, r := range out.Runs {
 		if i == statusShown {
 			break
 		}
 		s := runSummaryLine(r)
 		k, rest, _ := strings.Cut(s, "  ")
+		if r.Mine {
+			rest = "mine  " + rest
+		}
 		item(k, rest)
 	}
-	more(len(out.Runs)-statusShown, "", "gears runbook list")
+	more(len(out.Runs)-statusShown, "", "gears runbook runs")
 
 	fmt.Fprintln(w)
 	parts = nil
@@ -338,9 +341,12 @@ func printStatusFull(out *verbs.StatusOut) {
 	}
 
 	if len(out.Runs) > 0 {
-		fmt.Printf("\nruns      %d active\n", len(out.Runs))
+		fmt.Printf("\nruns      %d active, %d mine\n", len(out.Runs), len(out.MyRuns))
 		for _, r := range out.Runs {
 			fmt.Print("  ")
+			if r.Mine {
+				fmt.Print("mine ")
+			}
 			printRunSummary(r)
 		}
 	}

@@ -32,7 +32,49 @@ var (
 	rbClearCheck bool
 	rbClearName  bool
 	rbClearWhen  bool
+	rbRefresh    bool
+	rbMine       bool
+	rbBy         string
+	rbRunbook    string
+	rbLimit      int
+	rbCursor     string
 )
+
+var runbookRunsCmd = &cobra.Command{
+	Use:   "runs",
+	Short: "Runs from the gears record: current step, progress, agent, card (no orchestrator needed)",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := ctx()
+		if err != nil {
+			return err
+		}
+		out, err := verbs.RunbookRuns(c, verbs.RunbookRunsIn{Status: rbStatus, Runbook: rbRunbook, Card: rbTarget, By: rbBy, Mine: rbMine, Limit: rbLimit, Cursor: rbCursor})
+		if err != nil {
+			return err
+		}
+		if emit(out) {
+			return nil
+		}
+		if out.Note != "" {
+			fmt.Println("(" + out.Note + ")")
+		}
+		if len(out.Runs) == 0 {
+			fmt.Println("no runs")
+		}
+		for _, r := range out.Runs {
+			cur := "-"
+			if r.CurrentStep != nil {
+				cur = fmt.Sprintf("%d %s", r.CurrentStep.Position, r.CurrentStep.ID)
+			}
+			fmt.Printf("%s  %-24s %-10s %-5s %-8s %-16s %s\n", r.ID, r.Runbook, r.Status, r.Progress, r.Card, r.Agent, cur)
+		}
+		if out.Next != "" {
+			fmt.Println("more: --cursor " + out.Next)
+		}
+		return nil
+	},
+}
 
 var runbookCmd = &cobra.Command{
 	Use:   "runbook",
@@ -110,7 +152,7 @@ var runbookStepAddCmd = &cobra.Command{
 
 var runbookListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "Runbooks in this project, and active runs",
+	Short: "Official runbooks, this workspace's adopted copies, and local drafts",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c, err := ctx()
@@ -124,22 +166,30 @@ var runbookListCmd = &cobra.Command{
 		if emit(out) {
 			return nil
 		}
-		if len(out.Runbooks) == 0 {
-			fmt.Printf("no runbooks. copy a built-in (%s): gears runbook copy single-ticket-development\nor create one: gears runbook new \"...\"\n", strings.Join(out.Builtins, ", "))
+		if out.Note != "" {
+			fmt.Println("(" + out.Note + ")")
 		}
-		for _, rb := range out.Runbooks {
-			fmt.Printf("%-32s %-40s %-5s %d step%s\n", rb.Slug, rb.Title, rb.Target, len(rb.Steps), plural(len(rb.Steps), "", "s"))
-		}
-		if len(out.Adopted) > 0 {
-			fmt.Println("\nadopted (official copies)")
-			for _, rb := range out.Adopted {
-				fmt.Printf("%-32s %-40s %-9s %d step%s  from %s\n", rb.Slug, rb.Title, frozenWord(rb.Frozen), len(rb.Steps), plural(len(rb.Steps), "", "s"), rb.SourceRef)
+		if len(out.Official) > 0 {
+			fmt.Println("official")
+			for _, o := range out.Official {
+				line := fmt.Sprintf("  %-30s %-9s %d step%s  %s", o.Ref, frozenWord(o.Frozen), len(o.Steps), plural(len(o.Steps), "", "s"), o.Title)
+				if len(o.Adopted) > 0 {
+					line += "  (adopted as " + strings.Join(o.Adopted, ", ") + ")"
+				}
+				fmt.Println(line)
 			}
 		}
-		if len(out.Active) > 0 {
-			fmt.Println("\nactive runs")
-			for _, r := range out.Active {
-				printRunSummary(r)
+		fmt.Println("adopted")
+		if len(out.Adopted) == 0 {
+			fmt.Println("  none: gears runbook adopt <ref>")
+		}
+		for _, rb := range out.Adopted {
+			fmt.Printf("  %-30s %-9s %d step%s  from %s\n", rb.Slug, frozenWord(rb.Frozen), len(rb.Steps), plural(len(rb.Steps), "", "s"), rb.SourceRef)
+		}
+		if len(out.Drafts) > 0 {
+			fmt.Println("local drafts (not runnable)")
+			for _, rb := range out.Drafts {
+				fmt.Printf("  %-30s %-40s %-5s %d step%s\n", rb.Slug, rb.Title, rb.Target, len(rb.Steps), plural(len(rb.Steps), "", "s"))
 			}
 		}
 		return nil
@@ -335,14 +385,14 @@ var runbookSkipCmd = &cobra.Command{
 
 var runbookStatusCmd = &cobra.Command{
 	Use:   "status [run]",
-	Short: "A run's steps live from gears-api, or the workspace's runs",
+	Short: "A run's steps from the gears record (--refresh: live from the orchestrator), or the workspace's runs",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		in := verbs.RunbookStatusIn{Status: rbStatus, Card: rbTarget}
+		in := verbs.RunbookStatusIn{Status: rbStatus, Card: rbTarget, Refresh: rbRefresh}
 		if len(args) == 1 {
 			in.Run = args[0]
 		}
@@ -608,9 +658,17 @@ func init() {
 	runbookSkipCmd.Flags().StringVar(&rbReason, "reason", "", "why the step is skipped (required)")
 	runbookStatusCmd.Flags().StringVar(&rbStatus, "status", "", "list filter: running, completed, ...")
 	runbookStatusCmd.Flags().StringVar(&rbTarget, "card", "", "list filter: card key")
+	runbookStatusCmd.Flags().BoolVar(&rbRefresh, "refresh", false, "one run: read the live state from the orchestrator first (stale when it cannot)")
+	runbookRunsCmd.Flags().StringVar(&rbStatus, "status", "", "running (or active), completed, failed, canceled, ...")
+	runbookRunsCmd.Flags().StringVar(&rbRunbook, "runbook", "", "the runbook's name or ref")
+	runbookRunsCmd.Flags().StringVar(&rbTarget, "card", "", "card key")
+	runbookRunsCmd.Flags().StringVar(&rbBy, "by", "", "agent label that started the run")
+	runbookRunsCmd.Flags().BoolVar(&rbMine, "mine", false, "only runs this agent started")
+	runbookRunsCmd.Flags().IntVar(&rbLimit, "limit", 0, "page size (default 50)")
+	runbookRunsCmd.Flags().StringVar(&rbCursor, "cursor", "", "next page, from the previous output")
 
 	runbookStepCmd.AddCommand(runbookStepAddCmd, runbookStepUpdateCmd, runbookStepRemoveCmd, runbookStepMoveCmd)
 	runbookCmd.AddCommand(runbookNewCmd, runbookCopyCmd, runbookUpdateCmd, runbookDeleteCmd, runbookListCmd, runbookShowCmd, runbookStartCmd,
-		runbookStepCmd, runbookCompleteCmd, runbookSkipCmd, runbookStatusCmd)
+		runbookStepCmd, runbookCompleteCmd, runbookSkipCmd, runbookStatusCmd, runbookRunsCmd)
 	root.AddCommand(runbookCmd)
 }

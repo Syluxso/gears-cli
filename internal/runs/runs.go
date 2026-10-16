@@ -104,9 +104,10 @@ func Save(p *project.Project, r api.Run) (bool, error) {
 
 // Filter narrows List. Status "active" means running.
 type Filter struct {
-	Status string
-	Card   string
-	Agent  string
+	Status  string
+	Card    string
+	Agent   string
+	Runbook string // the run's name or registered ref
 }
 
 // List is the cached runs, newest first, with steps.
@@ -123,7 +124,8 @@ func List(p *project.Project, f Filter) ([]api.Run, error) {
 	rows, err := db.Query(`SELECT id, workspace_id, runbook, status, current_step, card_key, agent_label, started_by, version, started_at, finished_at, updated_at,
 		runbook_ref, runbook_version, internal, started_via
 		FROM record_runs WHERE (? = '' OR status = ?) AND (? = '' OR lower(card_key) = lower(?)) AND (? = '' OR agent_label = ?)
-		ORDER BY started_at DESC, id DESC`, status, status, f.Card, f.Card, f.Agent, f.Agent)
+		  AND (? = '' OR lower(runbook) = lower(?) OR lower(runbook_ref) = lower(?))
+		ORDER BY started_at DESC, id DESC`, status, status, f.Card, f.Card, f.Agent, f.Agent, f.Runbook, f.Runbook, f.Runbook)
 	if err != nil {
 		return nil, err
 	}

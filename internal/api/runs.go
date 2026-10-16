@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/url"
+	"strconv"
 	"time"
 )
 
@@ -36,6 +37,10 @@ type Run struct {
 	FinishedAt  *time.Time `json:"finishedAt,omitempty"`
 	UpdatedAt   time.Time  `json:"updatedAt"`
 	Steps       []RunStep  `json:"steps"`
+	// Stale: a refresh was asked for and could not happen; Note says why
+	// (GRS-71). Not cached.
+	Stale bool   `json:"stale,omitempty"`
+	Note  string `json:"note,omitempty"`
 }
 
 type RunStep struct {
@@ -143,4 +148,36 @@ func (c *Client) ListRuns(ctx context.Context, ws, status, card string) ([]Run, 
 	var out []Run
 	_, err := c.Do(ctx, "GET", path, nil, &out)
 	return out, err
+}
+
+// RunsFilter narrows ListRunsPage (GRS-71). Agent is the label that
+// started the run.
+type RunsFilter struct {
+	Status, Card, Runbook, Agent, Cursor string
+	Limit                                int
+}
+
+// ListRunsPage lists the workspace's runs from the gears record (it needs
+// no orchestrator) and the next page's cursor (X-Next-Cursor).
+func (c *Client) ListRunsPage(ctx context.Context, ws string, f RunsFilter) ([]Run, string, error) {
+	q := url.Values{}
+	for k, v := range map[string]string{"status": f.Status, "card": f.Card, "runbook": f.Runbook, "agent": f.Agent, "cursor": f.Cursor} {
+		if v != "" {
+			q.Set(k, v)
+		}
+	}
+	if f.Limit > 0 {
+		q.Set("limit", strconv.Itoa(f.Limit))
+	}
+	path := "/api/v1/workspaces/" + url.PathEscape(ws) + "/runs"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	var out []Run
+	_, hdr, err := c.DoHeader(ctx, "GET", path, nil, &out)
+	next := ""
+	if hdr != nil {
+		next = hdr.Get("X-Next-Cursor")
+	}
+	return out, next, err
 }

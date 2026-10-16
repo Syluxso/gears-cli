@@ -178,9 +178,10 @@ func RunbookStepSkip(c Ctx, in RunbookStepSkipIn) (*api.RunStepOut, error) {
 }
 
 type RunbookStatusIn struct {
-	Run    string `json:"run,omitempty" jsonschema:"Run id (or a cached prefix) for one run. Omit to list the workspace's runs."`
-	Status string `json:"status,omitempty" jsonschema:"List filter: running (or active), completed, failed, canceled, terminated, timed_out."`
-	Card   string `json:"card,omitempty" jsonschema:"List filter: card key."`
+	Run     string `json:"run,omitempty" jsonschema:"Run id (or a cached prefix) for one run, from the gears record. Omit to list the workspace's runs."`
+	Refresh bool   `json:"refresh,omitempty" jsonschema:"With run: gears-api reads the live state from the orchestrator first; when it cannot, the record answers with stale: true and a note."`
+	Status  string `json:"status,omitempty" jsonschema:"List filter: running (or active), completed, failed, canceled, terminated, timed_out."`
+	Card    string `json:"card,omitempty" jsonschema:"List filter: card key."`
 	AgentOpt
 }
 
@@ -191,8 +192,9 @@ type RunbookStatusOut struct {
 	Note  string    `json:"note,omitempty"`
 }
 
-// RunbookStatus is one run (refreshed by gears-api from the orchestrator)
-// or the workspace's runs. Offline it answers the cache with stale: true.
+// RunbookStatus is one run from the gears record (refreshed from the
+// orchestrator only when asked) or the workspace's runs. It needs no
+// orchestrator; with gears-api offline it answers the cache, stale.
 func RunbookStatus(c Ctx, in RunbookStatusIn) (*RunbookStatusOut, error) {
 	cl, err := runsClient()
 	var apiErr error
@@ -204,10 +206,10 @@ func RunbookStatus(c Ctx, in RunbookStatusIn) (*RunbookStatusOut, error) {
 			if err != nil {
 				return nil, err
 			}
-			r, err := cl.GetRun(ctx, id, true)
+			r, err := cl.GetRun(ctx, id, in.Refresh)
 			if err == nil {
 				c.cacheRun(r)
-				return &RunbookStatusOut{Run: r}, nil
+				return &RunbookStatusOut{Run: r, Stale: r.Stale, Note: r.Note}, nil
 			}
 			apiErr = err
 		} else if ws, err := c.runsWorkspace(); err != nil {
@@ -266,4 +268,117 @@ func deref(t *time.Time) time.Time {
 		return time.Time{}
 	}
 	return *t
+}
+
+// ------------------------------------------------------------ runbook_runs
+
+// RunbookRunsIn filters the workspace's runs (GRS-71); the same arguments
+// as the remote MCP's runbook_runs.
+type RunbookRunsIn struct {
+	Status  string `json:"status,omitempty" jsonschema:"running (or active), completed, failed, canceled, terminated, timed_out."`
+	Runbook string `json:"runbook,omitempty" jsonschema:"The runbook's name (an adopted slug, a registered ref or an inline name)."`
+	Card    string `json:"card,omitempty" jsonschema:"Card key, e.g. GRS-55."`
+	By      string `json:"by,omitempty" jsonschema:"Only runs started by this agent label."`
+	Mine    bool   `json:"mine,omitempty" jsonschema:"Only runs started by the label you act as."`
+	Limit   int    `json:"limit,omitempty" jsonschema:"Page size, 1-200 (default 50)."`
+	Cursor  string `json:"cursor,omitempty" jsonschema:"next from the previous page."`
+	AgentOpt
+}
+
+// RunsStep is a run's current step in a summary.
+type RunsStep struct {
+	ID        string     `json:"id"`
+	Kind      string     `json:"kind"`
+	Title     string     `json:"title,omitempty"`
+	Position  int        `json:"position"`
+	StartedAt *time.Time `json:"startedAt,omitempty"`
+}
+
+// RunsItem is one run as runbook_runs lists it (the remote shape).
+type RunsItem struct {
+	ID          string     `json:"id"`
+	Runbook     string     `json:"runbook"`
+	RunbookRef  string     `json:"runbookRef,omitempty"`
+	Status      string     `json:"status"`
+	CurrentStep *RunsStep  `json:"currentStep,omitempty"`
+	Done        int        `json:"done"`
+	Total       int        `json:"total"`
+	Progress    string     `json:"progress"`
+	Agent       string     `json:"agent"`
+	Card        string     `json:"card,omitempty"`
+	StartedAt   time.Time  `json:"startedAt"`
+	FinishedAt  *time.Time `json:"finishedAt,omitempty"`
+	UpdatedAt   time.Time  `json:"updatedAt"`
+}
+
+type RunbookRunsOut struct {
+	Runs  []RunsItem `json:"runs"`
+	Next  string     `json:"next,omitempty"`
+	Stale bool       `json:"stale,omitempty"`
+	Note  string     `json:"note,omitempty"`
+}
+
+func runsItem(r api.Run) RunsItem {
+	out := RunsItem{ID: r.ID, Runbook: r.Runbook, RunbookRef: r.RunbookRef, Status: r.Status, Total: len(r.Steps), Agent: r.AgentLabel,
+		Card: r.CardKey, StartedAt: r.StartedAt, FinishedAt: r.FinishedAt, UpdatedAt: r.UpdatedAt}
+	for _, s := range r.Steps {
+		if s.Status == "completed" || s.Status == "skipped" {
+			out.Done++
+		}
+	}
+	if cur := runs.Current(&r); cur != nil {
+		out.CurrentStep = &RunsStep{ID: cur.StepID, Kind: cur.Kind, Title: cur.Title, Position: cur.Position, StartedAt: cur.StartedAt}
+	}
+	out.Progress = fmt.Sprintf("%d/%d", out.Done, out.Total)
+	return out
+}
+
+// RunbookRuns lists runs from the gears record through gears-api (it needs
+// no orchestrator), caching them; with gears-api offline, the local cache
+// with stale: true.
+func RunbookRuns(c Ctx, in RunbookRunsIn) (*RunbookRunsOut, error) {
+	by := strings.TrimSpace(in.By)
+	if in.Mine {
+		by = c.agentOr(in.Agent)
+	}
+	f := api.RunsFilter{Status: in.Status, Card: in.Card, Runbook: in.Runbook, Agent: by, Limit: in.Limit, Cursor: in.Cursor}
+	var apiErr error
+	if ws, err := c.runsWorkspace(); err != nil {
+		apiErr = err
+	} else if cl, err := runsClient(); err != nil {
+		apiErr = err
+	} else {
+		ctx, cancel := runCtx()
+		defer cancel()
+		list, next, err := cl.ListRunsPage(ctx, ws, f)
+		if err == nil {
+			out := &RunbookRunsOut{Runs: []RunsItem{}, Next: next}
+			for i := range list {
+				c.cacheRun(&list[i])
+				out.Runs = append(out.Runs, runsItem(list[i]))
+			}
+			return out, nil
+		}
+		var p *api.Problem
+		if errors.As(err, &p) && p.Status < 500 {
+			return nil, err
+		}
+		apiErr = err
+	}
+	list, err := runs.List(c.Project, runs.Filter{Status: in.Status, Card: in.Card, Agent: by, Runbook: in.Runbook})
+	if err != nil {
+		return nil, err
+	}
+	out := &RunbookRunsOut{Runs: []RunsItem{}, Stale: true, Note: "gears-api did not answer (" + apiErr.Error() + "); this is the local cache"}
+	limit := in.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	for i, r := range list {
+		if i == limit {
+			break
+		}
+		out.Runs = append(out.Runs, runsItem(r))
+	}
+	return out, nil
 }

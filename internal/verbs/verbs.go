@@ -105,7 +105,8 @@ type StatusOut struct {
 	Prefix     string                 `json:"prefix"`
 	Desk       []DeskItem             `json:"desk"`
 	Cards      CardStats              `json:"cards"`
-	Runs       []RunSummary           `json:"runs"`
+	Runs       []RunSummary           `json:"runs"`   // running runs of the workspace, mine first
+	MyRuns     []RunSummary           `json:"myRuns"` // GRS-71: my running runs, with their current step
 	Artifacts  ArtifactStats          `json:"artifacts"`
 	Session    []SessionLine          `json:"sessionToday"`
 	NextAction string                 `json:"nextAction"`
@@ -203,7 +204,7 @@ type ArtifactStats struct {
 // Status assembles everything an agent needs before it starts.
 func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 	out := &StatusOut{Project: c.Project.Slug, ProjectID: c.Project.ID, Root: c.Project.Root, Agent: c.agentInfo(), Prefix: c.Project.Prefix,
-		IsWorkspace: c.Project.IsWorkspace(), Desk: []DeskItem{}, Runs: []RunSummary{}, Session: []SessionLine{},
+		IsWorkspace: c.Project.IsWorkspace(), Desk: []DeskItem{}, Runs: []RunSummary{}, MyRuns: []RunSummary{}, Session: []SessionLine{},
 		Cards:     CardStats{ByState: []CardState{}, Mine: []CardLine{}, Ready: []CardLine{}},
 		Artifacts: ArtifactStats{ByPrefix: map[string]int{}, Problems: []string{}}, Current: c.Current}
 
@@ -240,9 +241,17 @@ func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 	if err != nil {
 		return nil, err
 	}
+	var others []RunSummary
 	for _, r := range recs {
-		out.Runs = append(out.Runs, recordSummary(r))
+		rs := recordSummary(r)
+		if rs.Agent == out.Agent.Label {
+			rs.Mine = true
+			out.MyRuns = append(out.MyRuns, rs)
+		} else {
+			others = append(others, rs)
+		}
 	}
+	out.Runs = append(append(out.Runs, out.MyRuns...), others...)
 
 	out.Cards.Stale = <-down
 	cards, err := card.List(c.Project, card.Filter{})
@@ -790,6 +799,7 @@ type RunSummary struct {
 	Done    int      `json:"done"`
 	Total   int      `json:"total"`
 	Current *RunStep `json:"current,omitempty"`
+	Mine    bool     `json:"mine,omitempty"` // started by the agent status runs as
 }
 
 type RunbookNewIn struct {
@@ -959,41 +969,81 @@ func RunbookCopy(c Ctx, in RunbookCopyIn) (*Runbook, error) {
 
 type RunbookListIn struct{}
 
+// RunbookListOut is the remote MCP's runbook_list (official, adopted,
+// officialAvailable, note) plus what only a local server has: the local
+// drafts, the built-ins they may copy, and their vocabulary.
 type RunbookListOut struct {
-	Runbooks   []Runbook            `json:"runbooks"`
-	Adopted    []api.AdoptedRunbook `json:"adopted"` // GRS-59: official copies, as last synced
-	Active     []RunSummary         `json:"activeRuns"`
-	Builtins   []string             `json:"builtins"`   // shipped runbooks a project may copy
-	Vocabulary map[string][]string  `json:"vocabulary"` // kind -> checks
-	Rules      []string             `json:"rules"`
+	Official          []api.OfficialRunbook `json:"official"`
+	Adopted           []api.AdoptedRunbook  `json:"adopted"`
+	OfficialAvailable bool                  `json:"officialAvailable"`
+	Note              string                `json:"note,omitempty"`
+	Stale             bool                  `json:"stale,omitempty"` // adopted is the local cache: gears-api did not answer
+	Drafts            []Runbook             `json:"drafts"`          // local runbook--<slug>.yaml, not runnable as they stand
+	Builtins          []string              `json:"builtins"`        // shipped drafts a project may copy
+	Vocabulary        map[string][]string   `json:"vocabulary"`      // the drafts' kind -> checks
+	Rules             []string              `json:"rules"`
 }
 
-// RunbookList is the local runbook definitions (authoring only) and the
-// running runs of the gears record as last synced (GRS-58).
+// RunbookList is the official catalog and the adopted copies from
+// gears-api (GRS-71: the adopted copies are the record and answer without
+// the orchestrator; a missing catalog is a note, not an error), then the
+// local drafts. gears-api offline: the cached adopted copies, stale.
 func RunbookList(c Ctx, _ RunbookListIn) (*RunbookListOut, error) {
 	books, err := runbook.All(c.Project)
 	if err != nil {
 		return nil, err
 	}
-	out := &RunbookListOut{Runbooks: []Runbook{}, Active: []RunSummary{}, Builtins: runbook.BuiltinSlugs(), Vocabulary: runbook.Checks, Rules: []string{
-		"Runs live in byz-orchestrator behind gears-api (GRS-51): start one with runbook_start, advance it with runbook_step_complete or runbook_step_skip, read it with runbook_status.",
-		"A step completes only with evidence that exists in the workspace on gears-api: a session entry, an artifact, a desk item, a card (in a state), or a commit sha.",
-		"The runbooks listed here are local definitions (runbook--<slug>.yaml); the local run engine is retired, so they are drafts, not runnable as they stand.",
-	}}
+	out := &RunbookListOut{Official: []api.OfficialRunbook{}, Adopted: []api.AdoptedRunbook{}, Drafts: []Runbook{}, Builtins: runbook.BuiltinSlugs(),
+		Vocabulary: runbook.Checks, Rules: []string{
+			"Runs live in byz-orchestrator behind gears-api (GRS-51): start one with runbook_start, advance it with runbook_step_complete or runbook_step_skip, read it with runbook_status or runbook_runs.",
+			"A step completes only with evidence that exists in the workspace on gears-api: a session entry, an artifact, a desk item, a card (in a state), or a commit sha.",
+			"Adopted runbooks are copies of official ones on gears-api (runbook_adopt): a frozen copy cannot be edited and runs the official steps; an editable copy changes with runbook_edit. Start either with runbook_start and its slug; runbook_show explains its steps.",
+			"drafts are local definitions (runbook--<slug>.yaml) in the retired local vocabulary; they are not runnable as they stand.",
+		}}
 	for _, rb := range books {
-		out.Runbooks = append(out.Runbooks, runbookOut(rb))
+		out.Drafts = append(out.Drafts, runbookOut(rb))
+	}
+	var apiErr error
+	if ws, err := c.runsWorkspace(); err != nil {
+		apiErr = err
+	} else if cl, err := runsClient(); err != nil {
+		apiErr = err
+	} else {
+		ctx, cancel := runCtx()
+		defer cancel()
+		mine, err := cl.AdoptedRunbooks(ctx, ws)
+		if err == nil {
+			for _, rb := range mine {
+				_ = runs.SaveRunbook(c.Project, rb)
+			}
+			if mine != nil {
+				out.Adopted = mine
+			}
+			off, err := cl.OfficialRunbooks(ctx, ws)
+			var p *api.Problem
+			switch {
+			case err == nil:
+				if off != nil {
+					out.Official = off
+				}
+				out.OfficialAvailable = true
+			case errors.As(err, &p) && p.Status == 501:
+				out.Note = "the official catalog needs the runbook service, which this gears-api does not have; adopted copies are listed"
+			default:
+				out.Note = "the official catalog could not be read (" + err.Error() + "); adopted copies are listed"
+			}
+			return out, nil
+		}
+		apiErr = err
 	}
 	if out.Adopted, err = runs.Runbooks(c.Project); err != nil {
 		return nil, err
 	}
-	out.Rules = append(out.Rules, "Adopted runbooks are copies of official ones on gears-api (runbook_catalog, runbook_adopt): a frozen copy cannot be edited and runs the official steps; an editable copy changes with runbook_edit. Start either with runbook_start and its slug.")
-	recs, err := runs.List(c.Project, runs.Filter{Status: "running"})
-	if err != nil {
-		return nil, err
+	if out.Adopted == nil {
+		out.Adopted = []api.AdoptedRunbook{}
 	}
-	for _, r := range recs {
-		out.Active = append(out.Active, recordSummary(r))
-	}
+	out.Stale = true
+	out.Note = "gears-api did not answer (" + apiErr.Error() + "); adopted copies are the local cache and the official catalog is unknown"
 	return out, nil
 }
 

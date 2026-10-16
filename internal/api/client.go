@@ -140,17 +140,23 @@ func (p *Problem) Error() string {
 // Do sends a JSON request. out may be nil. 304 is not an error: out stays
 // empty and notModified is true.
 func (c *Client) Do(ctx context.Context, method, path string, body any, out any) (notModified bool, err error) {
+	notModified, _, err = c.DoHeader(ctx, method, path, body, out)
+	return notModified, err
+}
+
+// DoHeader is Do that also returns the response headers.
+func (c *Client) DoHeader(ctx context.Context, method, path string, body any, out any) (notModified bool, hdr http.Header, err error) {
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 		rdr = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.Host+path, rdr)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -158,24 +164,24 @@ func (c *Client) Do(ctx context.Context, method, path string, body any, out any)
 	c.auth(req)
 	resp, err := c.httpc.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("%s unreachable: %w", c.Host, err)
+		return false, nil, fmt.Errorf("%s unreachable: %w", c.Host, err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if resp.StatusCode == http.StatusNotModified {
-		return true, nil
+		return true, resp.Header, nil
 	}
 	if resp.StatusCode >= 300 {
 		var p Problem
 		if json.Unmarshal(raw, &p) == nil && p.Status != 0 {
-			return false, &p
+			return false, resp.Header, &p
 		}
-		return false, fmt.Errorf("%s %s: %d %s", method, path, resp.StatusCode, strings.TrimSpace(string(raw)))
+		return false, resp.Header, fmt.Errorf("%s %s: %d %s", method, path, resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	if out != nil && len(raw) > 0 {
-		return false, json.Unmarshal(raw, out)
+		return false, resp.Header, json.Unmarshal(raw, out)
 	}
-	return false, nil
+	return false, resp.Header, nil
 }
 
 // Raw sends bytes (artifact content) and returns the response body.

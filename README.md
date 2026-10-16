@@ -158,3 +158,15 @@ kind, params and, from the step-kind catalog, its tool, param spec and the
 evidence kinds that prove it. gears-api unreachable: the cached adopted copy
 (`stale: true`). `gears runbook abilities` (`runbook_abilities`) is that
 catalog, byz-orchestrator's `GET /abilities` through gears-api.
+
+`gears runbook runs [--status] [--runbook] [--card] [--by label] [--mine]
+[--limit] [--cursor]` (MCP `runbook_runs`, GRS-71) lists runs from the gears
+record as summaries: current step, progress done/total, agent, card,
+startedAt, finishedAt, and `next` to page. Every run read works without the
+orchestrator: `runbook_runs`, `runbook_status` (from the record; `refresh`
+/ `--refresh` asks for the live state and answers `stale: true` with a note
+when it cannot), `runbook_show` of an adopted copy, and `runbook_list`
+(adopted copies, `officialAvailable: false` and a note). gears-api offline:
+the local cache, stale. Only start, complete, skip, refresh, the official
+catalog and the abilities need the orchestrator. `gears status` lists my
+running runs first (`myRuns`, each with its current step).

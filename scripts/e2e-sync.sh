@@ -383,6 +383,11 @@ echo "== GRS-70: runbook show and the step-kind catalog"
 ( cd "$WS" && "$G" runbook show starter-copy --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['source']=='adopted' and o['editable'] and o['abilitiesAvailable'] and o['steps'][0]['tool']=='desk_send', o; print('ok: show adopted, steps explained')"
 ( cd "$WS" && "$G" runbook show single-ticket-development --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['source']=='adopted' and o['frozen'] and o['steps'][0]['evidenceKinds']==['card'], o; print('ok: show frozen copy')"
 ( cd "$WS" && "$G" runbook show starter --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['source']=='official' and o['adopted']==['starter-copy'], o; print('ok: show official')"
+echo "== GRS-71: runs from the record, filtered and paged"
+( cd "$WS" && "$G" runbook runs --runbook starter-copy --json ) | python -c "import json,sys; o=json.load(sys.stdin); r=o['runs']; assert len(r)==1 and r[0]['progress']=='0/2' and r[0]['currentStep']['id']=='plan', o; print('ok: runs by runbook with current step and progress')"
+( cd "$WS" && "$G" runbook runs --limit 1 --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert len(o['runs'])==1 and o.get('next'), o; print('ok: runs paged')"
+( cd "$WS" && "$G" runbook status "$RID" --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['run']['status']=='completed' and not o.get('stale'), o; print('ok: status from the record')"
+( cd "$WS" && "$G" status --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert 'myRuns' in o and all(r['mine'] for r in o['myRuns']), o['myRuns']; print('ok: status myRuns', len(o['myRuns']))"
 
 echo "== second sync is a no-op"
 # The push window includes the last push's second (stamps are to the
