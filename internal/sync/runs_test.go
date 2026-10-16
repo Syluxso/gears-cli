@@ -31,7 +31,13 @@ func TestApplyPulledRuns(t *testing.T) {
 		r := api.Run{ID: "run-0199e0a1-0000-7000-8000-000000000001", WorkspaceID: "ws", Runbook: "gears-migrate", Status: status,
 			CurrentStep: current, CardKey: "WS-1", AgentLabel: "claude-local", Version: version, StartedAt: now, UpdatedAt: now,
 			Steps: []api.RunStep{{StepID: "a", Position: 1, Kind: "do", Title: "a", Status: "completed",
-				Evidence: []api.Evidence{{Kind: "commit", Ref: "abc1234"}}}, {StepID: "b", Position: 2, Kind: "note", Title: "b", Status: "current"}}}
+				Evidence: []api.Evidence{{Kind: "commit", Ref: "abc1234"}}}, {StepID: "b", Position: 2, Kind: "note", Title: "b", Status: "current"}},
+			Events: []api.RunEvent{{RunID: "run-0199e0a1-0000-7000-8000-000000000001", Version: 1, Type: "run.started", At: now, Label: "claude-local"}}}
+		if version == 2 { // GRS-72: the timeline rides in the row
+			r.Events = append(r.Events, api.RunEvent{RunID: r.ID, Version: 2, Type: "step.completed", StepID: "a", At: now, Evidence: []api.Evidence{{Kind: "commit", Ref: "abc1234"}}})
+		} else {
+			r.Events = append(r.Events, api.RunEvent{RunID: r.ID, Version: 1, Type: "run.note", At: now})
+		}
 		b, _ := json.Marshal(r)
 		return api.Change{Table: "runs", ID: "0199e0a1-0000-7000-8000-000000000001", Op: "upsert", Row: b}
 	}
@@ -48,6 +54,11 @@ func TestApplyPulledRuns(t *testing.T) {
 	got, err := runs.Get(p, "run-0199e0a1")
 	if err != nil || got.Version != 2 || got.CurrentStep != "b" || len(got.Steps) != 2 || got.Steps[0].Evidence[0].Ref != "abc1234" {
 		t.Fatalf("cached: %+v %v", got, err)
+	}
+	// GRS-72: events are kept from every row, even an older one (append-only).
+	evs, err := runs.Events(p, got.ID)
+	if err != nil || len(evs) != 3 || evs[0].Type != "run.started" || evs[2].Type != "step.completed" || evs[2].Evidence[0].Ref != "abc1234" {
+		t.Fatalf("events: %+v %v", evs, err)
 	}
 	list, _ := runs.List(p, runs.Filter{Status: "active"})
 	if len(list) != 1 {

@@ -146,6 +146,7 @@ the server to it):
 | `runbook_start {runbook, cardKey?, steps?, idempotencyKey?}` | `gears runbook start <name> [--card] [--step id[:kind]] [--key]` | start a run: an adopted slug, a registered runbook, or inline steps |
 | `runbook_step_complete {run?, step?, evidence?, note?}` | `gears runbook complete [kind:ref ...] [--run] [--step] [--note]` | complete a step with evidence (`session:<id\|short>`, `artifact:<file\|id>`, `desk:<id>[:state]`, `card:<KEY>[:<State>]`, `commit:<sha>`); gears-api checks each exists first, so sync first |
 | `runbook_step_skip {reason, run?, step?, note?}` | `gears runbook skip --reason` | skip a step with a reason |
+| `runbook_history {run}` | `gears runbook history <run>` | the run's timeline: started, each step done or skipped (evidence, who), completed or canceled; cached from sync pull for offline reads (GRS-72) |
 | `runbook_stop {run, reason}` | `gears runbook stop <run> --reason` | stop (cancel) a running run; the current step and the run become canceled (GRS-69) |
 | `runbook_status {run?, refresh?, status?, card?}` | `gears runbook status [run] [--refresh]` | one run from the record (refresh asks for the live state; `stale: true` with a note when it cannot), or the list |
 | `runbook_runs {status?, runbook?, card?, by?, mine?, limit?, cursor?}` | `gears runbook runs [--mine] [--by] ...` | runs as summaries: current step, progress, agent, card, started/finished, `next` (GRS-71) |

@@ -25,6 +25,7 @@ var (
 	reRun     = regexp.MustCompile(`^/api/v1/runs/([^/]+)$`)
 	reRunStep = regexp.MustCompile(`^/api/v1/runs/([^/]+)/steps/([^/]+)/(complete|skip)$`)
 	reRunStop = regexp.MustCompile(`^/api/v1/runs/([^/]+)/cancel$`)
+	reRunEvts = regexp.MustCompile(`^/api/v1/runs/([^/]+)/events$`)
 )
 
 // RunBodies are the request bodies of every run write, in order.
@@ -51,7 +52,7 @@ func (s *Server) getRun(id string) *api.Run {
 
 func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 	path := r.URL.Path
-	if !reWsRuns.MatchString(path) && !reRun.MatchString(path) && !reRunStep.MatchString(path) && !reRunStop.MatchString(path) {
+	if !reWsRuns.MatchString(path) && !reRun.MatchString(path) && !reRunStep.MatchString(path) && !reRunStop.MatchString(path) && !reRunEvts.MatchString(path) {
 		return false
 	}
 	s.mu.Lock()
@@ -96,6 +97,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 			}
 			run.Steps = append(run.Steps, st)
 		}
+		addEvent(run, "run.started", "", in.Agent, now)
 		s.saveRun(run, in.Agent)
 		ok(http.StatusCreated, api.RunStartOut{Created: true, Run: run})
 	case reWsRuns.MatchString(path):
@@ -141,6 +143,17 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 			run.Stale, run.Note = true, "not refreshed: runbooks are not available on this gears-api; this is the gears record"
 		}
 		ok(http.StatusOK, run)
+	case reRunEvts.MatchString(path): // GRS-72
+		run := s.getRun(reRunEvts.FindStringSubmatch(path)[1])
+		if run == nil {
+			problem(w, 404, "gears.not_found", "not found")
+			return true
+		}
+		evs := run.Events
+		if evs == nil {
+			evs = []api.RunEvent{}
+		}
+		ok(http.StatusOK, api.RunHistory{RunID: run.ID, Runbook: run.Runbook, Status: run.Status, Version: run.Version, Events: evs})
 	case reRunStop.MatchString(path): // GRS-69
 		run := s.getRun(reRunStop.FindStringSubmatch(path)[1])
 		if run == nil {
@@ -166,6 +179,8 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 		run.Status, run.CurrentStep, run.FinishedAt, run.UpdatedAt = "canceled", "", &now, now
 		run.CancelReason, run.CanceledBy, run.CanceledLabel, run.CanceledVia, run.CanceledAt = in.Reason, "u-tester", in.Agent, "gears-api", &now
 		run.Version++
+		addEvent(run, "run.canceled", "", in.Agent, now)
+		run.Events[len(run.Events)-1].Reason = in.Reason
 		s.saveRun(run, in.Agent)
 		ok(http.StatusOK, run)
 	default:
@@ -220,9 +235,18 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 		} else {
 			run.CurrentStep, run.Status, run.FinishedAt = "", "completed", &now
 		}
+		addEvent(run, "step."+st.Status, st.StepID, in.Agent, now)
+		if run.Status == "completed" {
+			addEvent(run, "run.completed", "", in.Agent, now)
+		}
 		s.saveRun(run, in.Agent)
 		ok(http.StatusOK, api.RunStepOut{RunID: run.ID, StepID: st.StepID, StepStatus: st.Status, RunStatus: run.Status,
 			CurrentStep: run.CurrentStep, Version: run.Version, Run: run})
 	}
 	return true
+}
+
+// addEvent appends a timeline event (GRS-72) at the run's version.
+func addEvent(run *api.Run, typ, step, label string, at time.Time) {
+	run.Events = append(run.Events, api.RunEvent{RunID: run.ID, Version: run.Version, Type: typ, StepID: step, Label: label, At: at})
 }

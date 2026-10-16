@@ -486,6 +486,22 @@ var schema = []string{
 		updated_at   TEXT NOT NULL DEFAULT '',
 		row          TEXT NOT NULL
 	)`,
+	// Run timelines (GRS-72): gears-api's run_events, pulled inside the run
+	// rows and written by runbook_history. Append-only; a repeat is ignored.
+	`CREATE TABLE IF NOT EXISTS record_run_events (
+		run_id   TEXT NOT NULL,
+		version  INTEGER NOT NULL,
+		type     TEXT NOT NULL,
+		step_id  TEXT NOT NULL DEFAULT '',
+		at       TEXT NOT NULL DEFAULT '',
+		actor    TEXT NOT NULL DEFAULT '',
+		label    TEXT NOT NULL DEFAULT '',
+		via      TEXT NOT NULL DEFAULT '',
+		evidence TEXT NOT NULL DEFAULT '[]',
+		reason   TEXT NOT NULL DEFAULT '',
+		note     TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (run_id, version, type)
+	)`,
 	`CREATE TABLE IF NOT EXISTS record_run_steps (
 		run_id      TEXT NOT NULL REFERENCES record_runs(id) ON DELETE CASCADE,
 		step_id     TEXT NOT NULL,

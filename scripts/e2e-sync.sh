@@ -401,6 +401,12 @@ if ( cd "$WS" && "$G" runbook stop "$SRID" --reason again >"$WORK/rb.out" 2>&1 )
 grep -q "canceled" "$WORK/rb.out" || { cat "$WORK/rb.out"; fail "second stop does not say the run is finished"; }
 ( cd "$C" && "$G" sync >/dev/null && "$G" runbook show "$SRID" --json ) | python -c "import json,sys; r=json.load(sys.stdin)['run']; assert r['status']=='canceled' and r['cancelReason']=='started the wrong runbook', r; print('ok: clone sees the run canceled')"
 
+echo "== GRS-72: run history from gears-api, and from the clone's pulled cache"
+( cd "$WS" && "$G" runbook history "$RID" --json ) | python -c "import json,sys; o=json.load(sys.stdin); t=[(e['type'],e['version'],e.get('stepId','')) for e in o['events']]; assert t==[('run.started',1,''),('step.completed',2,'backup'),('step.skipped',3,'migrate'),('step.completed',4,'verify'),('run.completed',4,'')], t; assert o['events'][1]['evidence'][0]['ref']=='$SID' and o['events'][2]['reason']=='nothing to migrate', o; print('ok: history of the completed run')"
+( cd "$WS" && "$G" runbook history "$SRID" --json ) | python -c "import json,sys; o=json.load(sys.stdin); t=[e['type'] for e in o['events']]; assert t==['run.started','run.canceled'] and o['events'][1]['reason']=='started the wrong runbook' and o['events'][1]['stepId']=='take', o; print('ok: history of the stopped run')"
+( cd "$WS" && "$G" runbook history "$SRID" ) | grep -q "run.canceled" || fail "history text has no run.canceled"
+python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); n=c.execute('SELECT count(*) FROM record_run_events WHERE run_id=?',(sys.argv[2],)).fetchone()[0]; assert n==5, n; print('ok: clone pulled the timeline,', n, 'events')" "$C/.gears/.gearbox/local.db" "$RID"
+
 echo "== second sync is a no-op"
 # The push window includes the last push's second (stamps are to the
 # second), so the first sync after a write in that second re-sends it once.

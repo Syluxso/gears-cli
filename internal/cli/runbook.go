@@ -418,6 +418,62 @@ a cached one. A finished run is refused.`,
 	},
 }
 
+var runbookHistoryCmd = &cobra.Command{
+	Use:   "history <run>",
+	Short: "A run's timeline: started, each step done or skipped (evidence, who), completed or canceled",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := ctx()
+		if err != nil {
+			return err
+		}
+		out, err := verbs.RunbookHistory(c, verbs.RunbookHistoryIn{Run: args[0]})
+		if err != nil {
+			return err
+		}
+		if emit(out) {
+			return nil
+		}
+		if out.Note != "" {
+			fmt.Println("(" + out.Note + ")")
+		}
+		fmt.Printf("run %s  %s  %s  v%d\n", out.RunID, out.Runbook, out.Status, out.Version)
+		if len(out.Events) == 0 {
+			fmt.Println("  no events recorded")
+		}
+		for _, e := range out.Events {
+			fmt.Println("  " + historyLine(e))
+		}
+		return nil
+	},
+}
+
+// historyLine is one timeline event: when, version, type, step, who, and
+// its evidence, reason or note.
+func historyLine(e api.RunEvent) string {
+	line := fmt.Sprintf("%s  v%-3d %-15s", e.At.Local().Format("2006-01-02 15:04:05"), e.Version, e.Type)
+	if e.StepID != "" {
+		line += " " + e.StepID
+	}
+	who := e.Label
+	if who == "" {
+		who = e.Via
+	}
+	if who != "" {
+		line += "  by " + who
+	}
+	for _, ev := range e.Evidence {
+		line += "  [" + ev.Kind + " " + ev.Ref + "]"
+	}
+	if e.Reason != "" {
+		line += "  (" + e.Reason + ")"
+	}
+	if e.Note != "" {
+		line += "  note: " + e.Note
+	}
+	return line
+}
+
 var runbookStatusCmd = &cobra.Command{
 	Use:   "status [run]",
 	Short: "A run's steps from the gears record (--refresh: live from the orchestrator), or the workspace's runs",
@@ -705,6 +761,6 @@ func init() {
 
 	runbookStepCmd.AddCommand(runbookStepAddCmd, runbookStepUpdateCmd, runbookStepRemoveCmd, runbookStepMoveCmd)
 	runbookCmd.AddCommand(runbookNewCmd, runbookCopyCmd, runbookUpdateCmd, runbookDeleteCmd, runbookListCmd, runbookShowCmd, runbookStartCmd,
-		runbookStepCmd, runbookCompleteCmd, runbookSkipCmd, runbookStopCmd, runbookStatusCmd, runbookRunsCmd)
+		runbookStepCmd, runbookCompleteCmd, runbookSkipCmd, runbookStopCmd, runbookHistoryCmd, runbookStatusCmd, runbookRunsCmd)
 	root.AddCommand(runbookCmd)
 }

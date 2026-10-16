@@ -43,6 +43,9 @@ type Run struct {
 	CanceledVia   string     `json:"canceledVia,omitempty"`
 	CanceledAt    *time.Time `json:"canceledAt,omitempty"`
 	Steps         []RunStep  `json:"steps"`
+	// Events is the run's timeline (GRS-72); sync pull's run rows carry it,
+	// the REST run reads do not.
+	Events []RunEvent `json:"events,omitempty"`
 	// Stale: a refresh was asked for and could not happen; Note says why
 	// (GRS-71). Not cached.
 	Stale bool   `json:"stale,omitempty"`
@@ -124,6 +127,39 @@ func (c *Client) StepRun(ctx context.Context, runID, step string, complete bool,
 	}
 	var out RunStepOut
 	_, err := c.Do(ctx, "POST", "/api/v1/runs/"+url.PathEscape(runID)+"/steps/"+url.PathEscape(step)+"/"+verb, in, &out)
+	return &out, err
+}
+
+// RunEvent is one transition of a run's timeline (GRS-72): run.started,
+// step.completed, step.skipped, run.completed, run.canceled, ...
+type RunEvent struct {
+	RunID    string     `json:"runId"`
+	Version  int        `json:"version"`
+	Type     string     `json:"type"`
+	StepID   string     `json:"stepId,omitempty"`
+	At       time.Time  `json:"at"`
+	Actor    string     `json:"actor,omitempty"`
+	Label    string     `json:"label,omitempty"`
+	Via      string     `json:"via,omitempty"`
+	Evidence []Evidence `json:"evidence,omitempty"`
+	Reason   string     `json:"reason,omitempty"`
+	Note     string     `json:"note,omitempty"`
+}
+
+// RunHistory is GET /runs/:id/events.
+type RunHistory struct {
+	RunID   string     `json:"runId"`
+	Runbook string     `json:"runbook"`
+	Status  string     `json:"status"`
+	Version int        `json:"version"`
+	Events  []RunEvent `json:"events"`
+}
+
+// RunEvents reads a run's timeline from the gears record (no orchestrator
+// needed).
+func (c *Client) RunEvents(ctx context.Context, runID string) (*RunHistory, error) {
+	var out RunHistory
+	_, err := c.Do(ctx, "GET", "/api/v1/runs/"+url.PathEscape(runID)+"/events", nil, &out)
 	return &out, err
 }
 

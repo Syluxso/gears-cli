@@ -214,6 +214,69 @@ func RunbookStop(c Ctx, in RunbookStopIn) (*api.Run, error) {
 	return out, nil
 }
 
+// RunbookHistoryIn names the run whose timeline to read (GRS-72); the
+// same arguments as the remote MCP's runbook_history.
+type RunbookHistoryIn struct {
+	Run string `json:"run" jsonschema:"Run id (run-<uuid>, or a prefix of a cached one), from runbook_start or runbook_runs."`
+	AgentOpt
+}
+
+// RunbookHistoryOut is a run's timeline, oldest first.
+type RunbookHistoryOut struct {
+	RunID   string         `json:"runId"`
+	Runbook string         `json:"runbook"`
+	Status  string         `json:"status"`
+	Version int            `json:"version"`
+	Events  []api.RunEvent `json:"events"`
+	Stale   bool           `json:"stale,omitempty"`
+	Note    string         `json:"note,omitempty"`
+}
+
+// RunbookHistory reads a run's timeline from gears-api (it needs no
+// orchestrator) and caches it; with gears-api offline, the cached
+// timeline (from sync pull) with stale: true.
+func RunbookHistory(c Ctx, in RunbookHistoryIn) (*RunbookHistoryOut, error) {
+	key := strings.TrimSpace(in.Run)
+	if key == "" {
+		return nil, errors.New("run required: its id (run-<uuid>) or a cached prefix")
+	}
+	cl, err := runsClient()
+	apiErr := err
+	if err == nil {
+		id, err := c.pickRun(cl, key, c.agentOr(in.Agent))
+		if err != nil {
+			return nil, err
+		}
+		ctx, cancel := runCtx()
+		defer cancel()
+		h, err := cl.RunEvents(ctx, id)
+		if err == nil {
+			if c.Project != nil {
+				_ = runs.SaveEvents(c.Project, h.RunID, h.Events)
+			}
+			if h.Events == nil {
+				h.Events = []api.RunEvent{}
+			}
+			return &RunbookHistoryOut{RunID: h.RunID, Runbook: h.Runbook, Status: h.Status, Version: h.Version, Events: h.Events}, nil
+		}
+		var p *api.Problem
+		if errors.As(err, &p) && p.Status < 500 {
+			return nil, err
+		}
+		apiErr = err
+	}
+	r, err := runs.Get(c.Project, key)
+	if err != nil {
+		return nil, fmt.Errorf("gears-api did not answer (%v); %w", apiErr, err)
+	}
+	evs, err := runs.Events(c.Project, r.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &RunbookHistoryOut{RunID: r.ID, Runbook: r.Runbook, Status: r.Status, Version: r.Version, Events: evs, Stale: true,
+		Note: "gears-api did not answer (" + apiErr.Error() + "); this is the local cache"}, nil
+}
+
 type RunbookStatusIn struct {
 	Run     string `json:"run,omitempty" jsonschema:"Run id (or a cached prefix) for one run, from the gears record. Omit to list the workspace's runs."`
 	Refresh bool   `json:"refresh,omitempty" jsonschema:"With run: gears-api reads the live state from the orchestrator first; when it cannot, the record answers with stale: true and a note."`

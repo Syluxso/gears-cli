@@ -46,6 +46,11 @@ func SaveDB(db *sql.DB, r api.Run) (bool, error) {
 	if strings.TrimSpace(r.ID) == "" {
 		return false, nil
 	}
+	// GRS-72: the timeline is append-only, so it is kept whatever the
+	// version: a late event still belongs to the run.
+	if err := SaveEventsDB(db, r.ID, r.Events); err != nil {
+		return false, err
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return false, err
@@ -93,6 +98,76 @@ func SaveDB(db *sql.DB, r api.Run) (bool, error) {
 		}
 	}
 	return true, tx.Commit()
+}
+
+// SaveEventsDB appends a run's timeline rows, ignoring ones it has.
+func SaveEventsDB(db *sql.DB, runID string, evs []api.RunEvent) error {
+	if len(evs) == 0 || strings.TrimSpace(runID) == "" {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, e := range evs {
+		if e.Type == "" {
+			continue
+		}
+		ev := e.Evidence
+		if ev == nil {
+			ev = []api.Evidence{}
+		}
+		b, _ := json.Marshal(ev)
+		if _, err := tx.Exec(`INSERT INTO record_run_events (run_id, version, type, step_id, at, actor, label, via, evidence, reason, note)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id, version, type) DO NOTHING`,
+			runID, e.Version, e.Type, e.StepID, ts(e.At), e.Actor, e.Label, e.Via, string(b), e.Reason, e.Note); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// SaveEvents is SaveEventsDB on the project's cache.
+func SaveEvents(p *project.Project, runID string, evs []api.RunEvent) error {
+	db, err := store.Open(p)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return SaveEventsDB(db, runID, evs)
+}
+
+// Events is a cached run's timeline, oldest first (as gears-api orders it).
+func Events(p *project.Project, runID string) ([]api.RunEvent, error) {
+	db, err := store.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT run_id, version, type, step_id, at, actor, label, via, evidence, reason, note FROM record_run_events WHERE run_id = ?
+		ORDER BY version, CASE WHEN type = 'run.started' THEN 0 WHEN type LIKE 'step.%' THEN 1 ELSE 2 END, rowid`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []api.RunEvent{}
+	for rows.Next() {
+		var e api.RunEvent
+		var at, ev string
+		if err := rows.Scan(&e.RunID, &e.Version, &e.Type, &e.StepID, &at, &e.Actor, &e.Label, &e.Via, &ev, &e.Reason, &e.Note); err != nil {
+			return nil, err
+		}
+		if t := parse(at); t != nil {
+			e.At = *t
+		}
+		_ = json.Unmarshal([]byte(ev), &e.Evidence)
+		if len(e.Evidence) == 0 {
+			e.Evidence = nil
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // Save is SaveDB on the project's cache.
