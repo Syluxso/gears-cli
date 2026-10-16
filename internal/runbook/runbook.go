@@ -562,7 +562,7 @@ func ownerCheck(r *Run, agent string) error {
 		return fmt.Errorf("run %s is %s", r.Short(), r.Status)
 	}
 	if r.Agent != agent {
-		return fmt.Errorf("run %s belongs to %s; use runbook_takeover with a reason to continue it as %s", r.Short(), r.Agent, agent)
+		return fmt.Errorf("run %s belongs to %s; the local run engine is retired, so it cannot be continued as %s", r.Short(), r.Agent, agent)
 	}
 	return nil
 }

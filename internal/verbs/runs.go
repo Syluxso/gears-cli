@@ -61,7 +61,7 @@ func (c Ctx) runsWorkspace() (string, error) {
 type RunbookStartIn struct {
 	Runbook        string        `json:"runbook" jsonschema:"A registered runbook's name (e.g. gears-migrate), or the name of the inline steps."`
 	Steps          []api.StepDef `json:"steps,omitempty" jsonschema:"Inline definition, in order: each {id, kind?, title?, params?}; kinds come from the orchestrator's ability catalog (freeform, do, ask, approval, gate, note, card.move, card.comment, git.branch, git.commit, git.push, git.merge). Omit to start the registered runbook."`
-	Card           string        `json:"card,omitempty" jsonschema:"Card key the run is for, e.g. GRS-55. Must be on the workspace's board."`
+	Card           string        `json:"cardKey,omitempty" jsonschema:"Card key the run is for, e.g. GRS-55. Must be on the workspace's board."`
 	IdempotencyKey string        `json:"idempotencyKey,omitempty" jsonschema:"Same key again returns the run it started."`
 	AgentOpt
 }

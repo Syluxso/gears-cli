@@ -12,7 +12,8 @@ import (
 	"github.com/Syluxso/gears-cli/internal/verbs"
 )
 
-// Official runbooks (GRS-59): catalog, adopt, edit, through gears-api.
+// Official runbooks (GRS-59): adopt, edit, unadopt, through gears-api;
+// gears runbook list shows the catalog.
 
 var (
 	rbDescription string
@@ -99,45 +100,10 @@ var runbookAbilitiesCmd = &cobra.Command{
 	},
 }
 
-var runbookCatalogCmd = &cobra.Command{
-	Use:   "catalog",
-	Short: "Official runbooks (frozen or editable) and this workspace's adopted copies",
-	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := ctx()
-		if err != nil {
-			return err
-		}
-		out, err := verbs.RunbookCatalog(c, verbs.RunbookCatalogIn{})
-		if err != nil {
-			return err
-		}
-		if emit(out) {
-			return nil
-		}
-		fmt.Println("official")
-		for _, o := range out.Official {
-			line := fmt.Sprintf("  %-28s %-9s %d steps  %s", o.Ref, frozenWord(o.Frozen), len(o.Steps), o.Title)
-			if len(o.Adopted) > 0 {
-				line += fmt.Sprintf("  (adopted as %v)", o.Adopted)
-			}
-			fmt.Println(line)
-		}
-		fmt.Println("adopted")
-		if len(out.Adopted) == 0 {
-			fmt.Println("  none: gears runbook adopt <ref>")
-		}
-		for _, rb := range out.Adopted {
-			fmt.Printf("  %-28s %-9s %d steps  from %s\n", rb.Slug, frozenWord(rb.Frozen), len(rb.Steps), rb.SourceRef)
-		}
-		return nil
-	},
-}
-
 var runbookAdoptCmd = &cobra.Command{
 	Use:   "adopt <ref> [--as <name>]",
 	Short: "Adopt an official runbook into this workspace",
-	Long: `Copies an official runbook (gears runbook catalog) into the workspace on
+	Long: `Copies an official runbook (gears runbook list) into the workspace on
 gears-api. A frozen one becomes a read-only copy whose runs always use the
 official steps; an editable one becomes the workspace's own copy (default
 slug <ref>-copy) that gears runbook edit changes. Start either with
@@ -204,5 +170,26 @@ func init() {
 	runbookEditCmd.Flags().StringVar(&rbTitle, "title", "", "new title")
 	runbookEditCmd.Flags().StringVar(&rbDescription, "description", "", "new description")
 	runbookEditCmd.Flags().StringVar(&rbStepsFile, "steps-file", "", "JSON file with the whole new step list")
-	runbookCmd.AddCommand(runbookCatalogCmd, runbookAdoptCmd, runbookEditCmd, runbookAbilitiesCmd)
+	runbookCmd.AddCommand(runbookAdoptCmd, runbookEditCmd, runbookAbilitiesCmd, runbookUnadoptCmd)
+}
+
+var runbookUnadoptCmd = &cobra.Command{
+	Use:   "unadopt <slug>",
+	Short: "Remove an adopted runbook (frozen or editable) from the workspace",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := ctx()
+		if err != nil {
+			return err
+		}
+		out, err := verbs.RunbookUnadopt(c, verbs.RunbookUnadoptIn{Runbook: args[0]})
+		if err != nil {
+			return err
+		}
+		if emit(out) {
+			return nil
+		}
+		fmt.Println("unadopted " + out.Runbook)
+		return nil
+	},
 }

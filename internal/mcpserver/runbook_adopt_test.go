@@ -60,7 +60,7 @@ func TestRunbookAdoptTools(t *testing.T) {
 		}
 	}
 
-	cat := must("runbook_catalog", map[string]any{})
+	cat := must("runbook_list", map[string]any{})
 	if len(cat["official"].([]any)) != 2 || len(cat["adopted"].([]any)) != 0 {
 		t.Fatalf("catalog: %v", cat)
 	}

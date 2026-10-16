@@ -82,8 +82,10 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 	add(s, c, "runbook_delete", "Delete a runbook definition. Local definition files only.", verbs.RunbookDelete)
 	add(s, c, "runbook_copy", "Copy a runbook into this project: a built-in (see runbook_list.builtins; single-ticket-development is the canonical one) or one from another project's directory. as renames the copy.", verbs.RunbookCopy)
 	// Official runbooks (GRS-59): adopted into the workspace on gears-api.
-	add(s, c, "runbook_catalog", "The official runbooks (live from gears-api, which reads byz-orchestrator's catalog): each frozen or editable, with its steps and the slugs this workspace adopted it as; and the workspace's adopted copies. Needs gears login.", verbs.RunbookCatalog)
+	// GRS-73: these and the run tools below have the remote MCP's names and
+	// args (testdata/runbook-tools.json); the draft tools above are local only.
 	add(s, c, "runbook_adopt", "Adopt an official runbook into the workspace (gears-api). Frozen: a read-only copy whose runs always use the official steps; the authoring tools and runbook_edit refuse it. Editable: the workspace's own copy (default slug <ref>-copy) that runbook_edit changes. Start either with runbook_start runbook=<slug>.", verbs.RunbookAdopt)
+	add(s, c, "runbook_unadopt", "Remove an adopted runbook (frozen or editable) from the workspace on gears-api by slug, and from the local cache. Un-adopting is not an edit, so a frozen copy may go; runs already started keep their steps. Needs no orchestrator.", verbs.RunbookUnadopt)
 	add(s, c, "runbook_edit", "Change an adopted editable runbook on gears-api: title, description, or the whole step list ({id, kind?, title?, params?} on catalog abilities). A frozen copy is refused.", verbs.RunbookEdit)
 	// Runs (GRS-51/56): through gears-api, which checks evidence and calls
 	// byz-orchestrator. The local run engine's tools are gone.

@@ -80,14 +80,17 @@ var runbookCmd = &cobra.Command{
 	Use:   "runbook",
 	Short: "Runbook runs on gears-api, and local runbook drafts",
 	Long: `Runs (GRS-51) live in byz-orchestrator behind gears-api: start, complete,
-skip and status go to gears-api, which checks that evidence exists in the
-workspace before a step advances. list and show read the local cache of the
-gears record (gears sync pulls it); status reads live.
+skip, status and runs go to gears-api, which checks that evidence exists in
+the workspace before a step advances; reads come from the gears record and
+fall back to the local cache (gears sync pulls it) when gears-api is
+offline.
 
-Official runbooks (GRS-59) are frozen or editable: catalog lists them, adopt
-copies one into the workspace on gears-api, edit changes an editable copy.
-A frozen copy cannot be edited anywhere and runs the official steps; start
-an adopted runbook with start <slug>.
+Official runbooks (GRS-59) are frozen or editable: list shows them with the
+adopted copies, show explains one, abilities is the step-kind catalog,
+adopt copies one into the workspace on gears-api, edit changes an editable
+copy, unadopt removes a copy. A frozen copy cannot be edited anywhere and
+runs the official steps; start an adopted runbook with start <slug>. runs
+lists runs from the gears record (no orchestrator needed).
 
 The local run engine is retired. new, copy, update, delete and step
 add/update/remove/move still author runbook--<slug>.yaml drafts in
@@ -122,7 +125,7 @@ var runbookNewCmd = &cobra.Command{
 	},
 }
 
-var runbookStepCmd = &cobra.Command{Use: "step", Short: "Author (add, update, remove, move) or complete (done) steps"}
+var runbookStepCmd = &cobra.Command{Use: "step", Short: "Author the steps of a local draft: add, update, remove, move"}
 
 var runbookStepAddCmd = &cobra.Command{
 	Use:   "add <slug> <text>",

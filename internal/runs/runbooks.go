@@ -122,3 +122,14 @@ func RefuseAdopted(p *project.Project, slug string) error {
 	return fmt.Errorf("runbook %s is adopted from the official runbook %s and lives on gears-api; change it with runbook_edit (gears runbook edit %s), not the local authoring tools",
 		rb.Slug, rb.SourceRef, rb.Slug)
 }
+
+// ForgetRunbook drops a cached copy by id (un-adopted).
+func ForgetRunbook(p *project.Project, id string) error {
+	db, err := store.Open(p)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	_, err = DeleteRunbookDB(db, id)
+	return err
+}

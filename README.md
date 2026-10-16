@@ -124,49 +124,44 @@ Sibling repos:
 Earlier generations of Gears live in `Syluxso/gears`; nothing from them is carried over.
 
 Runbook runs (GRS-51, GRS-56, GRS-58) live in byz-orchestrator behind
-gears-api; the local run engine is retired. `gears runbook start <name>`
-(`--card`, `--step id[:kind]` for inline steps, `--key`), `gears runbook
-complete [kind:ref ...]` (`--run`, `--step`, `--note`; evidence
-`session:<id|short>`, `artifact:<file|id>`, `desk:<id>[:state]`,
-`card:<KEY>[:<State>]`, `commit:<sha>`), `gears runbook skip --reason`
-and `gears runbook status [run]` call gears-api (never the orchestrator),
-which checks that evidence exists in the workspace before a step advances;
-sync first so local entries are there. The MCP tools are `runbook_start`,
-`runbook_step_complete`, `runbook_step_skip` and `runbook_status`, each with
-an optional `agent`. `gears sync` pulls runs (table `runs`) into the
-`record_runs` / `record_run_steps` cache that `gears status`,
-`gears runbook list` and `gears runbook show run-...` read. Runbook
-authoring (`new`, `copy`, `update`, `delete`, `step add|update|remove|move`)
-still writes local `runbook--<slug>.yaml` drafts.
+gears-api; the local run engine is retired. The CLI and `gears run` call
+gears-api only, never the orchestrator. `gears sync` pulls runs (table
+`runs`) and adopted copies (table `runbooks`) into the local cache that
+`gears status` and the offline fallbacks read.
 
-Official runbooks (GRS-59) are byz-orchestrator's catalog, each frozen or
-editable. `gears runbook catalog` (MCP `runbook_catalog`) lists them with
-the workspace's adopted copies; `gears runbook adopt <ref> [--as name]`
-(`runbook_adopt`) copies one into the workspace on gears-api. A frozen copy
-is read-only: gears-api, `runbook_edit` and every local authoring tool
-refuse it ("a frozen copy of the official runbook ..."), and its runs use
-the official steps. An editable copy (default slug `<ref>-copy`) changes
-with `gears runbook edit <slug> [--title] [--description] [--steps-file]`
-(`runbook_edit`). Start either with `gears runbook start <slug>`. Copies are
-cached in `record_runbooks` (sync pulls table `runbooks`) and shown by
-`runbook list` / `runbook show <slug>`.
+**One runbook toolset (GRS-73).** The local MCP and the remote MCP expose
+the same runbook tools with the same names, required args and args
+(`internal/mcpserver/testdata/runbook-tools.json`, identical to gears-api's
+`testdata/runbook-tools.json`; `TestRunbookToolParity` in each repo holds
+the server to it):
 
-`gears runbook show <slug|ref>` (MCP `runbook_show {runbook}`, GRS-70) is
-one runbook in full from gears-api: an adopted copy by slug or an official
-runbook by ref, with source, frozen/editable, sourceRef and each step's
-kind, params and, from the step-kind catalog, its tool, param spec and the
-evidence kinds that prove it. gears-api unreachable: the cached adopted copy
-(`stale: true`). `gears runbook abilities` (`runbook_abilities`) is that
-catalog, byz-orchestrator's `GET /abilities` through gears-api.
+| MCP tool | CLI | |
+|----------|-----|-|
+| `runbook_list` | `gears runbook list` | official runbooks (frozen or editable) and the adopted copies; `officialAvailable: false` and a note without the runbook service. Locally also `drafts`, `builtins`, `vocabulary` |
+| `runbook_show {runbook}` | `gears runbook show <slug\|ref>` | one runbook in full: source, frozen/editable, steps with kind, params, tool, param spec and evidence kinds from the catalog (GRS-70). Locally also a draft or a cached `run-...` |
+| `runbook_abilities` | `gears runbook abilities` | the step-kind catalog (byz-orchestrator's `GET /abilities`) |
+| `runbook_adopt {ref, as?}` | `gears runbook adopt <ref> [--as]` | copy an official runbook into the workspace |
+| `runbook_edit {runbook, ...}` | `gears runbook edit <slug> [--title] [--description] [--steps-file]` | change an editable copy (a frozen one is refused) |
+| `runbook_unadopt {runbook}` | `gears runbook unadopt <slug>` | remove an adopted copy, frozen or editable (GRS-73) |
+| `runbook_start {runbook, cardKey?, steps?, idempotencyKey?}` | `gears runbook start <name> [--card] [--step id[:kind]] [--key]` | start a run: an adopted slug, a registered runbook, or inline steps |
+| `runbook_step_complete {run?, step?, evidence?, note?}` | `gears runbook complete [kind:ref ...] [--run] [--step] [--note]` | complete a step with evidence (`session:<id\|short>`, `artifact:<file\|id>`, `desk:<id>[:state]`, `card:<KEY>[:<State>]`, `commit:<sha>`); gears-api checks each exists first, so sync first |
+| `runbook_step_skip {reason, run?, step?, note?}` | `gears runbook skip --reason` | skip a step with a reason |
+| `runbook_status {run?, refresh?, status?, card?}` | `gears runbook status [run] [--refresh]` | one run from the record (refresh asks for the live state; `stale: true` with a note when it cannot), or the list |
+| `runbook_runs {status?, runbook?, card?, by?, mine?, limit?, cursor?}` | `gears runbook runs [--mine] [--by] ...` | runs as summaries: current step, progress, agent, card, started/finished, `next` (GRS-71) |
 
-`gears runbook runs [--status] [--runbook] [--card] [--by label] [--mine]
-[--limit] [--cursor]` (MCP `runbook_runs`, GRS-71) lists runs from the gears
-record as summaries: current step, progress done/total, agent, card,
-startedAt, finishedAt, and `next` to page. Every run read works without the
-orchestrator: `runbook_runs`, `runbook_status` (from the record; `refresh`
-/ `--refresh` asks for the live state and answers `stale: true` with a note
-when it cannot), `runbook_show` of an adopted copy, and `runbook_list`
-(adopted copies, `officialAvailable: false` and a note). gears-api offline:
-the local cache, stale. Only start, complete, skip, refresh, the official
-catalog and the abilities need the orchestrator. `gears status` lists my
-running runs first (`myRuns`, each with its current step).
+`run` left out on the step tools is your one running run. Every tool takes
+an optional `agent` (the label to act as). Kept local only, because they
+author `runbook--<slug>.yaml` drafts in the retired local vocabulary and
+do not clash with a shared name: `runbook_new`, `runbook_copy`,
+`runbook_update`, `runbook_delete`, `runbook_step_add`,
+`runbook_step_update`, `runbook_step_remove`, `runbook_step_move`
+(`gears runbook new|copy|update|delete|step ...`). They refuse an adopted
+slug. The local engine's tools are gone; `runbook_list` also carries the
+official catalog.
+
+**Without the orchestrator** (GRS-71) every read answers from the gears
+record: `runbook_runs`, `runbook_status`, `runbook_show` of an adopted copy,
+`runbook_list`'s adopted copies, `runbook_unadopt`. Only start, complete,
+skip, refresh, the official catalog and the abilities need it. gears-api
+offline: the local cache, `stale: true`. `gears status` lists my running
+runs first (`myRuns`, each with its current step).

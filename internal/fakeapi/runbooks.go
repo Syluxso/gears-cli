@@ -124,6 +124,15 @@ func (s *Server) runbooks(w http.ResponseWriter, r *http.Request) bool {
 			SourceVersion: off.Version, Frozen: off.Frozen, Steps: off.Steps, CreatedAt: now, UpdatedAt: now}
 		save(rb)
 		ok(201, rb)
+	case r.Method == http.MethodDelete:
+		rb := find(key)
+		if rb == nil {
+			problem(w, 404, "gears.not_found", "no adopted runbook "+key)
+			return true
+		}
+		delete(s.rows["runbooks"], rb.ID)
+		s.put("runbooks", rb.ID, nil, "delete", "tester")
+		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPut:
 		rb := find(key)
 		if rb == nil {

@@ -1,0 +1,33 @@
+{
+  "about": "GRS-73: the runbook MCP tools every Gears MCP exposes with the same names, required args and args. Checked into gears-api (testdata/runbook-tools.json) and gears-cli (internal/mcpserver/testdata/runbook-tools.json); keep the two files identical. args leaves out the identity arguments workspace and agent. gears-api's test asserts its remote tools equal this list; gears-cli's asserts its local tools carry every one of them, plus localOnly, and none of retired.",
+  "tools": {
+    "runbook_abilities": {"required": [], "args": []},
+    "runbook_adopt": {"required": ["ref"], "args": ["as", "ref"]},
+    "runbook_edit": {"required": ["runbook"], "args": ["description", "runbook", "steps", "title"]},
+    "runbook_list": {"required": [], "args": []},
+    "runbook_runs": {"required": [], "args": ["by", "card", "cursor", "limit", "mine", "runbook", "status"]},
+    "runbook_show": {"required": ["runbook"], "args": ["runbook"]},
+    "runbook_start": {"required": ["runbook"], "args": ["cardKey", "idempotencyKey", "runbook", "steps"]},
+    "runbook_status": {"required": [], "args": ["card", "refresh", "run", "status"]},
+    "runbook_step_complete": {"required": [], "args": ["evidence", "note", "run", "step"]},
+    "runbook_step_skip": {"required": ["reason"], "args": ["note", "reason", "run", "step"]},
+    "runbook_unadopt": {"required": ["runbook"], "args": ["runbook"]}
+  },
+  "localOnly": [
+    "runbook_copy",
+    "runbook_delete",
+    "runbook_new",
+    "runbook_step_add",
+    "runbook_step_move",
+    "runbook_step_remove",
+    "runbook_step_update",
+    "runbook_update"
+  ],
+  "retired": [
+    "runbook_abandon",
+    "runbook_catalog",
+    "runbook_skip",
+    "runbook_step_done",
+    "runbook_takeover"
+  ]
+}

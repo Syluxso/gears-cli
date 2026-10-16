@@ -78,7 +78,7 @@ func TestRunReadsWithoutOrchestrator(t *testing.T) {
 
 	r1 := me.must("runbook_start", map[string]any{"runbook": "demo", "steps": []any{map[string]any{"id": "one"}, map[string]any{"id": "two"}}})["run"].(map[string]any)["id"].(string)
 	me.must("runbook_step_complete", map[string]any{"run": r1, "evidence": []any{map[string]any{"kind": "commit", "ref": "abcdef0"}}})
-	other.must("runbook_start", map[string]any{"runbook": "starter-copy", "card": "WS-1"})
+	other.must("runbook_start", map[string]any{"runbook": "starter-copy", "cardKey": "WS-1"})
 	me.must("runbook_adopt", map[string]any{"ref": "starter"})
 
 	all := me.must("runbook_runs", map[string]any{})

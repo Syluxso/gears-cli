@@ -14,55 +14,15 @@ import (
 // the local authoring tools) and its runs use the official steps; an
 // editable copy is the workspace's own and runbook_edit changes it.
 
-type RunbookCatalogIn struct{}
-
-type RunbookCatalogOut struct {
-	Official []api.OfficialRunbook `json:"official"`
-	Adopted  []api.AdoptedRunbook  `json:"adopted"`
-}
-
-// RunbookCatalog lists the official runbooks (live) and the workspace's
-// adopted copies, caching the copies.
-func RunbookCatalog(c Ctx, _ RunbookCatalogIn) (*RunbookCatalogOut, error) {
-	ws, err := c.runsWorkspace()
-	if err != nil {
-		return nil, err
-	}
-	cl, err := runsClient()
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := runCtx()
-	defer cancel()
-	off, err := cl.OfficialRunbooks(ctx, ws)
-	if err != nil {
-		return nil, err
-	}
-	mine, err := cl.AdoptedRunbooks(ctx, ws)
-	if err != nil {
-		return nil, err
-	}
-	for _, rb := range mine {
-		_ = runs.SaveRunbook(c.Project, rb)
-	}
-	if off == nil {
-		off = []api.OfficialRunbook{}
-	}
-	if mine == nil {
-		mine = []api.AdoptedRunbook{}
-	}
-	return &RunbookCatalogOut{Official: off, Adopted: mine}, nil
-}
-
 type RunbookAdoptIn struct {
-	Ref string `json:"ref" jsonschema:"The official runbook to adopt (runbook_catalog official[].ref), e.g. single-ticket-development."`
+	Ref string `json:"ref" jsonschema:"The official runbook to adopt (runbook_list official[].ref), e.g. single-ticket-development."`
 	As  string `json:"as,omitempty" jsonschema:"Name for the copy (its slug is derived). Default: the ref for a frozen runbook, <ref>-copy for an editable one."`
 }
 
 // RunbookAdopt copies an official runbook into the workspace on gears-api.
 func RunbookAdopt(c Ctx, in RunbookAdoptIn) (*api.AdoptedRunbook, error) {
 	if strings.TrimSpace(in.Ref) == "" {
-		return nil, errors.New("ref required: an official runbook (gears runbook catalog)")
+		return nil, errors.New("ref required: an official runbook (gears runbook list)")
 	}
 	ws, err := c.runsWorkspace()
 	if err != nil {
@@ -140,4 +100,39 @@ func RunbookAbilities(c Ctx, _ RunbookAbilitiesIn) (*api.Abilities, error) {
 		out.Items = []api.Ability{}
 	}
 	return out, nil
+}
+
+type RunbookUnadoptIn struct {
+	Runbook string `json:"runbook" jsonschema:"The adopted runbook's slug (frozen or editable). Runs already started keep their steps."`
+}
+
+type RunbookUnadoptOut struct {
+	Runbook string `json:"runbook"`
+	Deleted bool   `json:"deleted"`
+}
+
+// RunbookUnadopt removes an adopted copy on gears-api (GRS-73), and from
+// the local cache. It needs no orchestrator.
+func RunbookUnadopt(c Ctx, in RunbookUnadoptIn) (*RunbookUnadoptOut, error) {
+	slug := strings.TrimSpace(in.Runbook)
+	if slug == "" {
+		return nil, errors.New("runbook required: the adopted runbook's slug")
+	}
+	ws, err := c.runsWorkspace()
+	if err != nil {
+		return nil, err
+	}
+	cl, err := runsClient()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := runCtx()
+	defer cancel()
+	if err := cl.DeleteRunbook(ctx, ws, slug); err != nil {
+		return nil, err
+	}
+	if rb, _ := runs.Runbook(c.Project, slug); rb != nil {
+		_ = runs.ForgetRunbook(c.Project, rb.ID)
+	}
+	return &RunbookUnadoptOut{Runbook: slug, Deleted: true}, nil
 }

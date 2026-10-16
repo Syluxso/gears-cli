@@ -93,7 +93,7 @@ func TestRunbookToolsThroughAPI(t *testing.T) {
 		}
 	}
 
-	started := must("runbook_start", map[string]any{"runbook": "gears-migrate", "card": "WS-1", "agent": "claude-web"})
+	started := must("runbook_start", map[string]any{"runbook": "gears-migrate", "cardKey": "WS-1", "agent": "claude-web"})
 	run := started["run"].(map[string]any)
 	id := run["id"].(string)
 	if run["agentLabel"] != "claude-web" || run["currentStep"] != "a" || run["workspaceId"] != p.WorkspaceID() {
