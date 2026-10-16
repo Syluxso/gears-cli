@@ -18,7 +18,7 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "gears", Version: version}, nil)
 
 	add(s, c, "status",
-		"Cold-start packet for the whole workspace. Run first in every session: every project (manifest, projects/ on disk, gears-api when logged in) with tech, git remote, branch, last commit, dirty count, ahead/behind and README line; open desk items for this agent, active runs, artifact counts and shape problems, today's session entries, and a suggested next action. agent {label, source (flag|env|workspace|login|default), howToChange} says who you are acting as and how to change it. arch {file, body} is the workspace's architecture doc (arch--primary.md) in full: read it before you design anything; missing with a hint when the workspace has none.",
+		"Cold-start packet for the whole workspace. Run first in every session: every project (manifest, projects/ on disk, gears-api when logged in) with tech, git remote, branch, last commit, dirty count, ahead/behind and README line; open desk items for this agent, running runs (gears record, as synced), artifact counts and shape problems, today's session entries, and a suggested next action. agent {label, source (flag|env|workspace|login|default), howToChange} says who you are acting as and how to change it. arch {file, body} is the workspace's architecture doc (arch--primary.md) in full: read it before you design anything; missing with a hint when the workspace has none.",
 		verbs.Status)
 	add(s, c, "arch", "The workspace's architecture artifact, arch--primary.md, in full: the master design doc (context, boundaries, current shape, open questions). Free-form, one per workspace; edit the file, then artifact_reconcile. status carries the same body. missing with a hint when the workspace has none (artifact_new prefix arch writes the stub).", verbs.Arch)
 
@@ -53,7 +53,7 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 	add(s, c, "card_activity", "Recent events across the board, newest first: who did what to which card.", verbs.CardActivity)
 	add(s, c, "card_delete", "Soft-delete a card. Its number is never reused; children are detached.", verbs.CardDelete)
 
-	add(s, c, "session_new", "Append one entry to today's session log. Kinds: done, decision, problem, next. Write as the work happens. Returns the entry id (a UUID, the same on every machine) and short (its last 8 hex digits); a runbook step with check=session accepts either as evidence.", verbs.SessionNew)
+	add(s, c, "session_new", "Append one entry to today's session log. Kinds: done, decision, problem, next. Write as the work happens. Returns the entry id (a UUID, the same on every machine) and short (its last 8 hex digits); runbook_step_complete accepts either as session evidence (once synced).", verbs.SessionNew)
 	add(s, c, "session_list", "Session entries from the last N days (default 3), oldest first, every agent folded by time.", verbs.SessionList)
 
 	add(s, c, "artifact_new", "Create an artifact: the row first, then a file seeded from its shape. Prefixes: adr (numbered, never rewritten), story, idea, index, free, arch (one per workspace, always arch--primary.md, free-form; a second is refused). The new file fails its shape until its sections are filled; fill it, then artifact_validate.", verbs.ArtifactNew)
@@ -70,21 +70,22 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 	add(s, c, "whoami", "Which API host, whether the saved device token works, the workspace this project syncs to, and the agent label in use: agent {label, source (flag|env|workspace|login|default), howToChange}.", verbs.Whoami)
 	add(s, c, "export", "Dump the local record (every table, every row) as JSON, or to a file with out. The record is not committed; this is its backup until sync exists.", verbs.Export)
 
-	add(s, c, "runbook_list", "Runbooks in this project, the active runs, the step vocabulary and the rules (one run per agent; owner advances; a run owns its card; evidence is Gears or git objects only).", verbs.RunbookList)
-	add(s, c, "runbook_show", "A runbook's steps, or a run's progress: card, branch, evidence and verification per step.", verbs.RunbookShow)
+	add(s, c, "runbook_list", "Local runbook definitions (authoring drafts in runbook--<slug>.yaml), the running runs of the gears record as last synced, the local step vocabulary and the rules. Runs themselves start with runbook_start.", verbs.RunbookList)
+	add(s, c, "runbook_show", "A local runbook definition's steps, or a run (run-...) from the local cache of the gears record. runbook_status reads a run live.", verbs.RunbookShow)
 	add(s, c, "runbook_new", "Create an empty runbook with a target (card | repo | none). The only way to author one; add steps with runbook_step_add.", verbs.RunbookNew)
 	add(s, c, "runbook_step_add", "Append a step. Kinds: ask, do, gears, git, gate. Checks bind to the run: do=commit|clean; gears=session|desk|artifact|card:<State> (moves the card); git=branch|commit|pushed|merged:<base>|clean; gate=pushed|merged:<base>|card:<State>|desk. name a step so a later when:<name>=<value> can skip on its answer.", verbs.RunbookStepAdd)
-	add(s, c, "runbook_step_update", "Edit one step in place: kind, text, check, name or when. Empty string clears check, name or when. Revalidated; refused while a run is active on the runbook.", verbs.RunbookStepUpdate)
-	add(s, c, "runbook_step_remove", "Remove a step; later steps renumber. Refused if a later when: refers to it, or while a run is active on the runbook.", verbs.RunbookStepRemove)
+	add(s, c, "runbook_step_update", "Edit one step in place: kind, text, check, name or when. Empty string clears check, name or when. Revalidated.", verbs.RunbookStepUpdate)
+	add(s, c, "runbook_step_remove", "Remove a step; later steps renumber. Refused if a later when: refers to it.", verbs.RunbookStepRemove)
 	add(s, c, "runbook_step_move", "Move a step to a new position. Refused if a when: would land before the step it refers to.", verbs.RunbookStepMove)
 	add(s, c, "runbook_update", "Change a runbook's title or target. The slug stays. Target change is refused if a step's check needs a card.", verbs.RunbookUpdate)
-	add(s, c, "runbook_delete", "Delete a runbook definition. Refused while a run is active on it; finished runs keep their copied steps.", verbs.RunbookDelete)
+	add(s, c, "runbook_delete", "Delete a runbook definition. Local definition files only.", verbs.RunbookDelete)
 	add(s, c, "runbook_copy", "Copy a runbook into this project: a built-in (see runbook_list.builtins; single-ticket-development is the canonical one) or one from another project's directory. as renames the copy.", verbs.RunbookCopy)
-	add(s, c, "runbook_start", "Start a run. For a card runbook, pass the card key: the card is assigned to you and owned by the run. Refused if you already have an active run or the card has one. Step 1 lands on your desk.", verbs.RunbookStart)
-	add(s, c, "runbook_step_done", "Perform or verify the current step and advance. gears steps act (log the session entry, move the card); git, do and gate steps verify against the run's branch, card and start time; ask records the answer. Failure is an error and the step stays current. Only the run's agent may call this.", verbs.RunStepDone)
-	add(s, c, "runbook_skip", "Skip the current step with a reason. The skip stays visible on the run. Only the run's agent may call this.", verbs.RunSkip)
-	add(s, c, "runbook_takeover", "Take another agent's active run, with a reason. Logged to the session and the card; its desk item moves to you.", verbs.RunTakeover)
-	add(s, c, "runbook_abandon", "End a run without completing it. Reason required; logged to the session as a problem. The card is released where it stands.", verbs.RunAbandon)
+	// Runs (GRS-51/56): through gears-api, which checks evidence and calls
+	// byz-orchestrator. The local run engine's tools are gone.
+	add(s, c, "runbook_start", "Start a runbook run on gears-api (byz-orchestrator drives it; never Temporal from here): a registered runbook by name (e.g. gears-migrate), or inline steps. card ties it to a card on the board. Returns the run with step 1 current. Needs gears login.", verbs.RunbookStart)
+	add(s, c, "runbook_step_complete", "Complete a run's current step (or the step named) with evidence. gears-api checks every item exists in the workspace (session entry, artifact, desk item, card in the expected state; a commit sha on shape only) before the orchestrator sees it; a refusal leaves the step current. Sync first so local session entries and artifacts are on gears-api. Omit run for your one running run.", verbs.RunbookStepComplete)
+	add(s, c, "runbook_step_skip", "Skip a run's current step (or the step named) with a reason that stays visible on the run. Omit run for your one running run.", verbs.RunbookStepSkip)
+	add(s, c, "runbook_status", "One run (refreshed from the orchestrator by gears-api) with each step's status, evidence and who did it; or, without run, the workspace's runs newest first (filter status, card). Offline: the local cache with stale: true.", verbs.RunbookStatus)
 
 	return s
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/Syluxso/gears-cli/internal/artifact"
 	"github.com/Syluxso/gears-cli/internal/gitx"
 	"github.com/Syluxso/gears-cli/internal/project"
+	"github.com/Syluxso/gears-cli/internal/runs"
 	"github.com/Syluxso/gears-cli/internal/session"
 	"github.com/Syluxso/gears-cli/internal/store"
 )
@@ -812,6 +813,17 @@ func apply(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, c
 	case "workspaces", "projects":
 		// Binding is local; nothing to apply.
 		return false, nil
+	case "runs":
+		// GRS-58: pull-only. The row is the run with its steps; the change id
+		// is only the uuid part of the run id. Never deleted.
+		if ch.Deleted || len(ch.Row) == 0 {
+			return false, nil
+		}
+		var run api.Run
+		if err := json.Unmarshal(ch.Row, &run); err != nil {
+			return false, err
+		}
+		return runs.SaveDB(db, run)
 	}
 	if isCardTable(ch.Table) {
 		return applyCard(db, ch)

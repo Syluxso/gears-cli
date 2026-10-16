@@ -88,6 +88,8 @@ type Server struct {
 	Invites       []api.Invite
 	MembersStatus int
 	inviteSeq     int
+
+	runBodies []map[string]any // GRS-56: every run write's body
 }
 
 func New(prefix string) *Server {
@@ -225,6 +227,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(s.PullDelay)
 		s.pull(w, r)
 	case s.membership(w, r):
+	case s.runs(w, r):
 	default:
 		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusNotFound)

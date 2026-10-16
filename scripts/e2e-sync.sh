@@ -18,6 +18,7 @@ PORT=8221
 cleanup() {
   [ -n "${WATCH_PID:-}" ] && kill "$WATCH_PID" 2>/dev/null || true
   [ -n "${FILES_PID:-}" ] && kill "$FILES_PID" 2>/dev/null || true
+  [ -n "${ORCH_PID:-}" ] && kill "$ORCH_PID" 2>/dev/null || true
   [ -n "${API_PID:-}" ] && kill "$API_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -36,6 +37,12 @@ FILES_PID=$!
 for i in $(seq 1 20); do curl -sf "http://127.0.0.1:$FILES_PORT/healthz" >/dev/null 2>&1 && break; sleep 0.5; done
 curl -sf "http://127.0.0.1:$FILES_PORT/healthz" >/dev/null || { echo "fake byz-files did not start"; cat "$WORK/files.log"; exit 1; }
 uploads() { cat "$FILES_COUNT" 2>/dev/null || echo 0; }
+# A stand-in byz-orchestrator (GRS-56): gears-api calls it with a fixed token.
+ORCH_PORT=8223
+python -I "$CLI_DIR/scripts/fake-orchestrator.py" $ORCH_PORT e2e-orch-token >> "$WORK/orch.log" 2>&1 &
+ORCH_PID=$!
+for i in $(seq 1 20); do curl -sf "http://127.0.0.1:$ORCH_PORT/healthz" >/dev/null 2>&1 && break; sleep 0.5; done
+curl -sf "http://127.0.0.1:$ORCH_PORT/healthz" >/dev/null || { echo "fake orchestrator did not start"; cat "$WORK/orch.log"; exit 1; }
 
 # start_api: this script's own throwaway gears-api (GRS-51 stops and
 # restarts it to prove an offline write queues).
@@ -45,6 +52,7 @@ start_api() {
   GEARS_PAT_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
   GEARS_DEV_TENANT="$ORG:$TEN" BYZ_KAFKA_ENABLED=false \
   BYZ_FILES_URL="http://127.0.0.1:$FILES_PORT" BYZ_FILES_TOKEN=e2e-files-token \
+  BYZ_ORCHESTRATOR_URL="http://127.0.0.1:$ORCH_PORT" BYZ_ORCHESTRATOR_TOKEN=e2e-orch-token \
   "$WORK/gears-api.exe" >> "$WORK/api.log" 2>&1 &
   API_PID=$!
   for i in $(seq 1 30); do curl -sf "$GEARS_API/healthz" >/dev/null 2>&1 && break; sleep 0.5; done
@@ -339,6 +347,20 @@ sleep 1
 ( cd "$C" && "$G" sync --json ) | python -c "import json,sys; r=json.load(sys.stdin); assert r['contentDownloaded']>=1, r; print('ok: clone downloaded', r['contentDownloaded'])"
 grep -q "retry body line" "$C/.gears/artifacts/free--retry-body.md" || fail "clone has not got the body"
 ( cd "$C" && "$G" sync --json ) | python -c "import json,sys; r=json.load(sys.stdin); assert r['contentUploaded']==0 and r['contentDownloaded']==0, r; print('ok: clone settles: nothing up, nothing down')"
+
+echo "== GRS-56/58: a run through gears-api, evidence checked, pulled by the clone"
+SID=$( cd "$WS" && "$G" session new --kind done "backed up for the run" --json | python -c "import json,sys; print(json.load(sys.stdin)['id'])" )
+( cd "$WS" && "$G" sync >/dev/null )
+RID=$( cd "$WS" && "$G" runbook start gears-migrate --json | python -c "import json,sys; o=json.load(sys.stdin); r=o['run']; assert r['currentStep']=='backup' and r['runbookRef']=='gears-migrate', o; print(r['id'])" )
+echo "ok: started $RID"
+if ( cd "$WS" && "$G" runbook complete --run "$RID" session:deadbeef >"$WORK/rb.out" 2>&1 ); then cat "$WORK/rb.out"; fail "missing evidence accepted"; fi
+grep -q "no session entry" "$WORK/rb.out" || { cat "$WORK/rb.out"; fail "evidence refusal"; }
+echo "ok: refused: $(head -1 "$WORK/rb.out")"
+( cd "$WS" && "$G" runbook complete --run "$RID" "session:$SID" --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['stepId']=='backup' and o['currentStep']=='migrate' and o['run']['steps'][0]['evidence'][0]['ref']=='$SID', o; print('ok: backup completed with the session entry')"
+( cd "$WS" && "$G" runbook skip --run "$RID" --reason "nothing to migrate" --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['currentStep']=='verify', o; print('ok: migrate skipped')"
+( cd "$WS" && "$G" runbook complete --run "$RID" commit:abc1234 --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['runStatus']=='completed' and o['notes'], o; print('ok: run completed; note:', o['notes'][0])"
+( cd "$C" && "$G" sync >/dev/null && "$G" runbook show "$RID" --json ) | python -c "import json,sys; r=json.load(sys.stdin)['run']; assert r['status']=='completed' and r['version']==4 and r['steps'][1]['skipReason']=='nothing to migrate', r; print('ok: clone pulled the run, v4, completed')"
+curl -s -H "Authorization: Bearer $TOKEN" "$GEARS_API/api/v1/workspaces/$WS_ID/runs" | python -c "import json,sys; d=json.load(sys.stdin); assert len(d)==1 and d[0]['id']=='$RID', d; print('ok: GET runs lists it')"
 
 echo "== second sync is a no-op"
 # The push window includes the last push's second (stamps are to the

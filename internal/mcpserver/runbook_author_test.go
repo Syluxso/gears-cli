@@ -154,29 +154,15 @@ func TestRunbookAuthoringOverMCP(t *testing.T) {
 	mustFail("runbook_update", map[string]any{"runbook": slug, "target": "repo"}, "needs a runbook with target card")
 	mustFail("runbook_update", map[string]any{"runbook": slug, "target": "bogus"}, "one of card, repo, none")
 
-	// Frozen while a run is active.
-	must("card_new", map[string]any{"title": "Freeze me", "acceptance": []string{"frozen, proven by test"},
-		"story": map[string]any{"asA": "a", "iWant": "b", "soThat": "c"}})
-	run := must("runbook_start", map[string]any{"runbook": slug, "target": "AU-1"})
-	mustFail("runbook_step_update", map[string]any{"runbook": slug, "step": 1, "text": "x"}, "in use by active run")
-	mustFail("runbook_step_remove", map[string]any{"runbook": slug, "step": 1}, "in use by active run")
-	mustFail("runbook_step_move", map[string]any{"runbook": slug, "step": 1, "to": 2}, "in use by active run")
-	mustFail("runbook_update", map[string]any{"runbook": slug, "title": "x"}, "in use by active run")
-	mustFail("runbook_delete", map[string]any{"runbook": slug}, "in use by active run")
-	// The other runbook is still editable.
+	// The local run engine is retired (GRS-51): drafts never freeze.
 	must("runbook_update", map[string]any{"runbook": "single-ticket-development", "title": "STD"})
-	must("runbook_abandon", map[string]any{"run": run["id"], "reason": "test over"})
 
-	// Delete, and the finished run still reads.
+	// Delete.
 	del := must("runbook_delete", map[string]any{"runbook": slug})
 	if del["deleted"] != true {
 		t.Fatalf("delete: %v", del)
 	}
 	mustFail("runbook_show", map[string]any{"key": slug}, "no runbook")
-	shown := must("runbook_show", map[string]any{"key": run["id"]})
-	if shown["run"].(map[string]any)["status"] != "abandoned" {
-		t.Fatalf("run after delete: %v", shown)
-	}
 
 	// Copy from another project directory.
 	other := t.TempDir()

@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Syluxso/gears-cli/internal/api"
 	"github.com/Syluxso/gears-cli/internal/verbs"
 )
 
@@ -23,6 +24,11 @@ var (
 	rbFrom       string
 	rbAs         string
 	rbTo         int
+	rbSteps      []string
+	rbKey        string
+	rbStep       string
+	rbNote       string
+	rbStatus     string
 	rbClearCheck bool
 	rbClearName  bool
 	rbClearWhen  bool
@@ -30,15 +36,15 @@ var (
 
 var runbookCmd = &cobra.Command{
 	Use:   "runbook",
-	Short: "Processes an agent cannot fake",
-	Long: `A runbook is an ordered list of steps for one kind of work, kept as
-runbook--<slug>.yaml in .gears/artifacts/ and authored only here. Starting
-one creates a run bound to a card and, once a branch step passes, a branch.
-Each step is performed or verified against the run, not merely recorded.
+	Short: "Runbook runs on gears-api, and local runbook drafts",
+	Long: `Runs (GRS-51) live in byz-orchestrator behind gears-api: start, complete,
+skip and status go to gears-api, which checks that evidence exists in the
+workspace before a step advances. list and show read the local cache of the
+gears record (gears sync pulls it); status reads live.
 
-Rules: one active run per agent; only the run's agent advances it (takeover
-with a reason moves it); a run owns its card's state; evidence is a Gears
-or git object, never a shell command.
+The local run engine is retired. new, copy, update, delete and step
+add/update/remove/move still author runbook--<slug>.yaml drafts in
+.gears/artifacts/, in the old local vocabulary.
 
 Step kinds and the checks they may declare (check or check:arg):
   ask    prompt the user; the answer is the evidence   (no check; --name it for when:)
@@ -148,32 +154,29 @@ func runSummaryLine(r verbs.RunSummary) string {
 	return fmt.Sprintf("%s  %s%s  %s  %d/%d  %s", short(r.ID), r.Runbook, target, r.Agent, r.Done, r.Total, cur)
 }
 
-func printRun(r *verbs.Run) {
-	fmt.Printf("run %s  %s", short(r.ID), r.Runbook)
-	if r.Target != "" {
-		fmt.Printf("  target %s", r.Target)
+func printRun(r *api.Run) {
+	fmt.Printf("run %s  %s  %s  v%d", r.ID, r.Runbook, r.Status, r.Version)
+	if r.CardKey != "" {
+		fmt.Printf("  card %s", r.CardKey)
 	}
-	if r.Branch != "" {
-		fmt.Printf("  branch %s", r.Branch)
+	if r.AgentLabel != "" {
+		fmt.Printf("  agent %s", r.AgentLabel)
 	}
-	fmt.Printf("  agent %s  %s\n", r.Agent, r.Status)
-	marks := map[string]string{"pending": "·", "current": "▶", "done": "✓", "verified": "✓✓", "skipped": "↷"}
+	fmt.Println()
+	marks := map[string]string{"pending": "·", "current": "▶", "completed": "✓", "skipped": "↷"}
 	for _, s := range r.Steps {
-		line := fmt.Sprintf("  %-2s %02d  %-6s %s", marks[s.State], s.Idx, s.Kind, s.Text)
-		if s.Check != "" {
-			line += "  <" + s.Check + ">"
+		line := fmt.Sprintf("  %-2s %02d  %-12s %s", marks[s.Status], s.Position, s.Kind, s.StepID)
+		if s.Title != "" && s.Title != s.StepID {
+			line += "  " + s.Title
 		}
-		if s.When != "" {
-			line += "  when " + s.When
+		for _, e := range s.Evidence {
+			line += "  [" + e.Kind + " " + e.Ref + "]"
 		}
-		if s.Evidence != "" {
-			line += "  [" + s.Evidence + "]"
+		if s.SkipReason != "" {
+			line += "  (" + s.SkipReason + ")"
 		}
-		if s.Reason != "" {
-			line += "  (" + s.Reason + ")"
-		}
-		if s.DoneAt != "" {
-			line += "  " + hhmm(s.DoneAt)
+		if s.DoneLabel != "" {
+			line += "  by " + s.DoneLabel
 		}
 		fmt.Println(line)
 	}
@@ -205,78 +208,84 @@ var runbookShowCmd = &cobra.Command{
 }
 
 var runbookStartCmd = &cobra.Command{
-	Use:   "start <slug>",
-	Short: "Start a run; its first step lands on the desk",
-	Args:  cobra.ExactArgs(1),
+	Use:   "start <runbook>",
+	Short: "Start a run on gears-api (a registered runbook, or --step inline steps)",
+	Long: `Starts a run through gears-api, which hands it to byz-orchestrator (GRS-51).
+<runbook> is a registered runbook's name, e.g. gears-migrate. With --step
+(repeatable, id or id:kind) the steps are sent inline under that name; kinds
+come from the orchestrator's ability catalog. --card ties the run to a card.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		out, err := verbs.RunbookStart(c, verbs.RunbookStartIn{Runbook: args[0], Target: rbTarget})
+		in := verbs.RunbookStartIn{Runbook: args[0], Card: rbTarget, IdempotencyKey: rbKey}
+		for _, st := range rbSteps {
+			id, kind, _ := strings.Cut(st, ":")
+			in.Steps = append(in.Steps, api.StepDef{ID: id, Kind: kind})
+		}
+		out, err := verbs.RunbookStart(c, in)
 		if err != nil {
 			return err
 		}
 		if emit(out) {
 			return nil
 		}
-		printRun(out)
+		printRun(out.Run)
 		return nil
 	},
 }
 
-func printStepOut(out *verbs.RunStepOut) {
-	state := "done"
-	if out.Verified {
-		state = "verified"
+func printStepOut(out *api.RunStepOut) {
+	fmt.Printf("step %s %s; run %s", out.StepID, out.StepStatus, out.RunStatus)
+	if out.CurrentStep != "" {
+		fmt.Printf(", current %s", out.CurrentStep)
 	}
-	if out.Step.State == "skipped" {
-		fmt.Printf("step %d skipped: %s\n", out.Step.Idx, out.Step.Reason)
-	} else {
-		fmt.Printf("step %d %s (%s)\n", out.Step.Idx, state, out.Note)
-	}
-	if out.Finished {
-		fmt.Printf("run %s completed\n", short(out.RunID))
-	} else if out.Next != nil {
-		fmt.Printf("next: step %d  %-6s %s\n", out.Next.Idx, out.Next.Kind, out.Next.Text)
+	fmt.Println()
+	for _, n := range out.Notes {
+		fmt.Println("note: " + n)
 	}
 }
 
-var runbookTakeoverCmd = &cobra.Command{
-	Use:   "takeover --run <id> --reason <why>",
-	Short: "Take another agent's active run",
-	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := ctx()
-		if err != nil {
-			return err
+// parseEvidence reads kind:ref, or kind:ref:state for card and desk.
+func parseEvidence(args []string) ([]api.Evidence, error) {
+	var out []api.Evidence
+	for _, a := range args {
+		kind, rest, ok := strings.Cut(a, ":")
+		if !ok || rest == "" {
+			return nil, fmt.Errorf("evidence %q: write kind:ref (session, artifact, commit, desk, card); card:KEY:State for a state", a)
 		}
-		out, err := verbs.RunTakeover(c, verbs.RunTakeoverIn{RunRef: verbs.RunRef{Run: rbRun}, Reason: rbReason})
-		if err != nil {
-			return err
+		e := api.Evidence{Kind: kind, Ref: rest}
+		if kind == "card" || kind == "desk" {
+			if ref, state, ok := strings.Cut(rest, ":"); ok {
+				e.Ref, e.Detail = ref, map[string]any{"state": state}
+			}
 		}
-		if emit(out) {
-			return nil
-		}
-		printRun(out)
-		return nil
-	},
+		out = append(out, e)
+	}
+	return out, nil
 }
 
-var runbookStepDoneCmd = &cobra.Command{
-	Use:   "done [evidence]",
-	Short: "Perform or verify the current step and advance",
-	Long: `Evidence is what the step's check asks for: a branch (default: the
-current one), a commit (default: HEAD), text to log for a session step, a
-desk item id, an artifact file, or the answer for an ask. Card, gate, pushed,
-merged and clean steps need none. Verification failure leaves the step current.`,
+var runbookCompleteCmd = &cobra.Command{
+	Use:   "complete [kind:ref ...]",
+	Short: "Complete a run's current step with evidence (through gears-api)",
+	Long: `Evidence items are kind:ref: session:<entry id or short>,
+artifact:<file name or id>, desk:<id>[:state], card:<KEY>[:<State>],
+commit:<sha>. gears-api checks each exists in the workspace (sync first);
+a refusal leaves the step current. --run defaults to your one running run,
+--step to its current step.`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		out, err := verbs.RunStepDone(c, verbs.RunStepDoneIn{RunRef: verbs.RunRef{Run: rbRun}, Evidence: strings.Join(args, " ")})
+		ev, err := parseEvidence(args)
+		if err != nil {
+			return err
+		}
+		out, err := verbs.RunbookStepComplete(c, verbs.RunbookStepCompleteIn{RunPick: verbs.RunPick{Run: rbRun, Step: rbStep, Note: rbNote}, Evidence: ev})
 		if err != nil {
 			return err
 		}
@@ -289,15 +298,15 @@ merged and clean steps need none. Verification failure leaves the step current.`
 }
 
 var runbookSkipCmd = &cobra.Command{
-	Use:   "skip",
-	Short: "Skip the current step, with a reason",
+	Use:   "skip --reason <why>",
+	Short: "Skip a run's current step, with a reason (through gears-api)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		out, err := verbs.RunSkip(c, verbs.RunSkipIn{RunRef: verbs.RunRef{Run: rbRun}, Reason: rbReason})
+		out, err := verbs.RunbookStepSkip(c, verbs.RunbookStepSkipIn{RunPick: verbs.RunPick{Run: rbRun, Step: rbStep, Note: rbNote}, Reason: rbReason})
 		if err != nil {
 			return err
 		}
@@ -309,23 +318,43 @@ var runbookSkipCmd = &cobra.Command{
 	},
 }
 
-var runbookAbandonCmd = &cobra.Command{
-	Use:   "abandon",
-	Short: "End a run without completing it",
-	Args:  cobra.NoArgs,
+var runbookStatusCmd = &cobra.Command{
+	Use:   "status [run]",
+	Short: "A run's steps live from gears-api, or the workspace's runs",
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		out, err := verbs.RunAbandon(c, verbs.RunAbandonIn{RunRef: verbs.RunRef{Run: rbRun}, Reason: rbReason})
+		in := verbs.RunbookStatusIn{Status: rbStatus, Card: rbTarget}
+		if len(args) == 1 {
+			in.Run = args[0]
+		}
+		out, err := verbs.RunbookStatus(c, in)
 		if err != nil {
 			return err
 		}
 		if emit(out) {
 			return nil
 		}
-		fmt.Printf("run %s abandoned\n", short(out.ID))
+		if out.Note != "" {
+			fmt.Println("(" + out.Note + ")")
+		}
+		if out.Run != nil {
+			printRun(out.Run)
+			return nil
+		}
+		if len(out.Runs) == 0 {
+			fmt.Println("no runs")
+		}
+		for _, r := range out.Runs {
+			cur := r.CurrentStep
+			if cur == "" {
+				cur = "-"
+			}
+			fmt.Printf("%s  %-20s %-10s %-8s %-14s %s\n", r.ID, r.Runbook, r.Status, r.CardKey, r.AgentLabel, cur)
+		}
 		return nil
 	},
 }
@@ -553,15 +582,20 @@ func init() {
 	runbookStepMoveCmd.Flags().IntVar(&rbTo, "to", 0, "position the step lands on (1-based)")
 	runbookCopyCmd.Flags().StringVar(&rbFrom, "from", "", "another project's root directory (default: built-in)")
 	runbookCopyCmd.Flags().StringVar(&rbAs, "as", "", "title for the copy")
-	runbookStartCmd.Flags().StringVar(&rbTarget, "target", "", "the card key for a card runbook")
-	for _, c := range []*cobra.Command{runbookStepDoneCmd, runbookSkipCmd, runbookAbandonCmd, runbookTakeoverCmd} {
-		c.Flags().StringVar(&rbRun, "run", "", "run id (default: your active run)")
+	runbookStartCmd.Flags().StringVar(&rbTarget, "card", "", "the card the run is for, e.g. GRS-55")
+	runbookStartCmd.Flags().StringArrayVar(&rbSteps, "step", nil, "inline step id or id:kind (repeatable, in order)")
+	runbookStartCmd.Flags().StringVar(&rbKey, "key", "", "idempotency key: the same key returns the same run")
+	for _, c := range []*cobra.Command{runbookCompleteCmd, runbookSkipCmd} {
+		c.Flags().StringVar(&rbRun, "run", "", "run id (default: your one running run)")
+		c.Flags().StringVar(&rbStep, "step", "", "step id (default: the current step)")
+		c.Flags().StringVar(&rbNote, "note", "", "a note kept on the step")
 	}
 	runbookSkipCmd.Flags().StringVar(&rbReason, "reason", "", "why the step is skipped (required)")
-	runbookAbandonCmd.Flags().StringVar(&rbReason, "reason", "", "why the run is abandoned (required)")
-	runbookTakeoverCmd.Flags().StringVar(&rbReason, "reason", "", "why you are taking the run (required)")
+	runbookStatusCmd.Flags().StringVar(&rbStatus, "status", "", "list filter: running, completed, ...")
+	runbookStatusCmd.Flags().StringVar(&rbTarget, "card", "", "list filter: card key")
 
-	runbookStepCmd.AddCommand(runbookStepAddCmd, runbookStepUpdateCmd, runbookStepRemoveCmd, runbookStepMoveCmd, runbookStepDoneCmd)
-	runbookCmd.AddCommand(runbookNewCmd, runbookCopyCmd, runbookUpdateCmd, runbookDeleteCmd, runbookListCmd, runbookShowCmd, runbookStartCmd, runbookStepCmd, runbookSkipCmd, runbookTakeoverCmd, runbookAbandonCmd)
+	runbookStepCmd.AddCommand(runbookStepAddCmd, runbookStepUpdateCmd, runbookStepRemoveCmd, runbookStepMoveCmd)
+	runbookCmd.AddCommand(runbookNewCmd, runbookCopyCmd, runbookUpdateCmd, runbookDeleteCmd, runbookListCmd, runbookShowCmd, runbookStartCmd,
+		runbookStepCmd, runbookCompleteCmd, runbookSkipCmd, runbookStatusCmd)
 	root.AddCommand(runbookCmd)
 }

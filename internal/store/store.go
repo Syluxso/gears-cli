@@ -7,12 +7,15 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/Syluxso/gears-cli/internal/project"
 )
+
+var schemaMu sync.Mutex
 
 // Open returns the local record for a project, creating it and its tables
 // on first use. Callers close it.
@@ -34,6 +37,11 @@ func Open(p *project.Project) (*sql.DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
+	// One schema pass at a time in this process: verbs open the cache from
+	// several goroutines (status), and two first opens racing on the same
+	// ALTER fail with "duplicate column name".
+	schemaMu.Lock()
+	defer schemaMu.Unlock()
 	for _, s := range schema {
 		if _, err := db.Exec(s); err != nil {
 			db.Close()
@@ -434,5 +442,46 @@ var schema = []string{
 		reason   TEXT NOT NULL DEFAULT '',
 		desk_item TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY (run_id, idx)
+	)`,
+
+	// Record runs (GRS-58): the cache of gears-api's runs, the ones
+	// byz-orchestrator drives. Pulled by sync (table "runs", steps inside
+	// the row) and written by the runbook tools from the API's answers. A
+	// row is replaced only by a higher version. The runs / run_steps tables
+	// above belong to the superseded local engine.
+	`CREATE TABLE IF NOT EXISTS record_runs (
+		id           TEXT PRIMARY KEY,
+		workspace_id TEXT NOT NULL DEFAULT '',
+		runbook      TEXT NOT NULL,
+		status       TEXT NOT NULL,
+		current_step TEXT NOT NULL DEFAULT '',
+		card_key     TEXT NOT NULL DEFAULT '',
+		agent_label  TEXT NOT NULL DEFAULT '',
+		started_by   TEXT NOT NULL DEFAULT '',
+		version      INTEGER NOT NULL,
+		started_at   TEXT NOT NULL,
+		finished_at  TEXT NOT NULL DEFAULT '',
+		updated_at   TEXT NOT NULL,
+		runbook_ref  TEXT NOT NULL DEFAULT '',
+		runbook_version INTEGER NOT NULL DEFAULT 0,
+		internal     INTEGER NOT NULL DEFAULT 0,
+		started_via  TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE TABLE IF NOT EXISTS record_run_steps (
+		run_id      TEXT NOT NULL REFERENCES record_runs(id) ON DELETE CASCADE,
+		step_id     TEXT NOT NULL,
+		position    INTEGER NOT NULL,
+		kind        TEXT NOT NULL DEFAULT '',
+		title       TEXT NOT NULL DEFAULT '',
+		status      TEXT NOT NULL,
+		evidence    TEXT NOT NULL DEFAULT '[]',
+		note        TEXT NOT NULL DEFAULT '',
+		skip_reason TEXT NOT NULL DEFAULT '',
+		done_by     TEXT NOT NULL DEFAULT '',
+		done_label  TEXT NOT NULL DEFAULT '',
+		started_at  TEXT NOT NULL DEFAULT '',
+		finished_at TEXT NOT NULL DEFAULT '',
+		done_via    TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (run_id, step_id)
 	)`,
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/Syluxso/gears-cli/internal/desk"
 	"github.com/Syluxso/gears-cli/internal/project"
 	"github.com/Syluxso/gears-cli/internal/runbook"
+	"github.com/Syluxso/gears-cli/internal/runs"
 	"github.com/Syluxso/gears-cli/internal/session"
 	"github.com/Syluxso/gears-cli/internal/shape"
 )
@@ -233,12 +234,13 @@ func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
 		out.Desk = append(out.Desk, deskItem(it))
 	}
 
-	runs, err := runbook.Active(c.Project)
+	// GRS-58: the running runs of the gears record, as last synced.
+	recs, err := runs.List(c.Project, runs.Filter{Status: "running"})
 	if err != nil {
 		return nil, err
 	}
-	for _, r := range runs {
-		out.Runs = append(out.Runs, runSummary(r))
+	for _, r := range recs {
+		out.Runs = append(out.Runs, recordSummary(r))
 	}
 
 	out.Cards.Stale = <-down
@@ -777,20 +779,6 @@ type RunStep struct {
 	DeskItem  string `json:"deskItem,omitempty"`
 }
 
-type Run struct {
-	ID        string    `json:"id"`
-	Runbook   string    `json:"runbook"`
-	Target    string    `json:"target,omitempty"`
-	Card      string    `json:"card,omitempty"`
-	Branch    string    `json:"branch,omitempty"`
-	Agent     string    `json:"agent"`
-	StartedAt string    `json:"startedAt"`
-	EndedAt   string    `json:"endedAt,omitempty"`
-	Status    string    `json:"status"`
-	Steps     []RunStep `json:"steps"`
-	Current   *RunStep  `json:"current,omitempty"`
-}
-
 type RunSummary struct {
 	ID      string   `json:"id"`
 	Runbook string   `json:"runbook"`
@@ -801,38 +789,6 @@ type RunSummary struct {
 	Done    int      `json:"done"`
 	Total   int      `json:"total"`
 	Current *RunStep `json:"current,omitempty"`
-}
-
-func runStep(s runbook.RunStep) RunStep {
-	return RunStep{Idx: s.Idx, Kind: s.Kind, Text: s.Text, Check: s.Label(), Name: s.Name, When: s.When, State: s.State,
-		Evidence: s.Evidence, StartedAt: ts(s.StartedAt), DoneAt: ts(s.DoneAt), Reason: s.Reason, DeskItem: s.DeskItem}
-}
-
-func runOut(r *runbook.Run) Run {
-	out := Run{ID: r.ID, Runbook: r.Runbook, Target: r.Target, Card: r.CardKey, Branch: r.Branch, Agent: r.Agent, StartedAt: ts(r.StartedAt),
-		EndedAt: ts(r.EndedAt), Status: r.Status, Steps: []RunStep{}}
-	for _, s := range r.Steps {
-		out.Steps = append(out.Steps, runStep(s))
-	}
-	if cur := r.Current(); cur != nil {
-		c := runStep(*cur)
-		out.Current = &c
-	}
-	return out
-}
-
-func runSummary(r runbook.Run) RunSummary {
-	out := RunSummary{ID: r.ID, Runbook: r.Runbook, Target: r.Target, Card: r.CardKey, Branch: r.Branch, Agent: r.Agent, Total: len(r.Steps)}
-	for _, s := range r.Steps {
-		if s.State != "pending" && s.State != "current" {
-			out.Done++
-		}
-	}
-	if cur := r.Current(); cur != nil {
-		c := runStep(*cur)
-		out.Current = &c
-	}
-	return out
 }
 
 type RunbookNewIn struct {
@@ -992,171 +948,59 @@ type RunbookListOut struct {
 	Rules      []string            `json:"rules"`
 }
 
+// RunbookList is the local runbook definitions (authoring only) and the
+// running runs of the gears record as last synced (GRS-58).
 func RunbookList(c Ctx, _ RunbookListIn) (*RunbookListOut, error) {
 	books, err := runbook.All(c.Project)
 	if err != nil {
 		return nil, err
 	}
 	out := &RunbookListOut{Runbooks: []Runbook{}, Active: []RunSummary{}, Builtins: runbook.BuiltinSlugs(), Vocabulary: runbook.Checks, Rules: []string{
-		"One active run per agent.",
-		"Only the agent that started a run advances it; runbook_takeover with a reason moves it.",
-		"A run on a card owns the card's state: card_move is refused, gears card:<State> steps move it.",
-		"Evidence is a Gears or git object checked against the run (its card, its branch, when the step began). No shell commands.",
-		"A runbook with an active run is frozen: step edits, update and delete wait until the run ends.",
+		"Runs live in byz-orchestrator behind gears-api (GRS-51): start one with runbook_start, advance it with runbook_step_complete or runbook_step_skip, read it with runbook_status.",
+		"A step completes only with evidence that exists in the workspace on gears-api: a session entry, an artifact, a desk item, a card (in a state), or a commit sha.",
+		"The runbooks listed here are local definitions (runbook--<slug>.yaml); the local run engine is retired, so they are drafts, not runnable as they stand.",
 	}}
 	for _, rb := range books {
 		out.Runbooks = append(out.Runbooks, runbookOut(rb))
 	}
-	runs, err := runbook.Active(c.Project)
+	recs, err := runs.List(c.Project, runs.Filter{Status: "running"})
 	if err != nil {
 		return nil, err
 	}
-	for _, r := range runs {
-		out.Active = append(out.Active, runSummary(r))
+	for _, r := range recs {
+		out.Active = append(out.Active, recordSummary(r))
 	}
 	return out, nil
 }
 
 type RunbookShowIn struct {
-	Key string `json:"key" jsonschema:"A runbook slug, or a run id (or prefix)."`
+	Key string `json:"key" jsonschema:"A runbook slug, or a run id (run-..., or a prefix of a cached one)."`
 }
 
 type RunbookShowOut struct {
 	Runbook *Runbook `json:"runbook,omitempty"`
-	Run     *Run     `json:"run,omitempty"`
+	Run     *api.Run `json:"run,omitempty"`
 }
 
+// RunbookShow is a local definition, or a run from the cache of the gears
+// record (runbook_status reads it live).
 func RunbookShow(c Ctx, in RunbookShowIn) (*RunbookShowOut, error) {
-	if r, err := runbook.Get(c.Project, in.Key); err == nil {
-		o := runOut(r)
-		return &RunbookShowOut{Run: &o}, nil
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(in.Key)), "run-") {
+		r, err := runs.Get(c.Project, in.Key)
+		if err != nil {
+			return nil, err
+		}
+		return &RunbookShowOut{Run: r}, nil
 	}
 	rb, err := runbook.Load(c.Project, in.Key)
 	if err != nil {
+		if r, rerr := runs.Get(c.Project, in.Key); rerr == nil {
+			return &RunbookShowOut{Run: r}, nil
+		}
 		return nil, err
 	}
 	o := runbookOut(rb)
 	return &RunbookShowOut{Runbook: &o}, nil
-}
-
-type RunbookStartIn struct {
-	Runbook string `json:"runbook" jsonschema:"Runbook slug."`
-	Target  string `json:"target,omitempty" jsonschema:"For a card runbook: the card key. The card is assigned to you and owned by the run until it ends."`
-}
-
-// RunbookStart creates a run and places step 1 on the agent's desk.
-func RunbookStart(c Ctx, in RunbookStartIn) (*Run, error) {
-	r, err := runbook.Start(c.Project, in.Runbook, in.Target, c.agent())
-	if err != nil {
-		return nil, err
-	}
-	o := runOut(r)
-	return &o, nil
-}
-
-type RunRef struct {
-	Run string `json:"run,omitempty" jsonschema:"Run id or prefix. Omit for your own active run."`
-}
-
-func (c Ctx) resolveRun(key string) (*runbook.Run, error) {
-	if key != "" {
-		return runbook.Get(c.Project, key)
-	}
-	return runbook.Only(c.Project, c.agent())
-}
-
-type RunStepDoneIn struct {
-	RunRef
-	Evidence string `json:"evidence,omitempty" jsonschema:"What the step's check asks for. branch: name (default: current). commit: sha (default: HEAD). session: the text to log, or an entry id (full, or its 8-digit short). desk: item id. artifact: file. ask or no check: the answer or a note. gears card:<State>, gate, pushed, merged, clean: none needed."`
-}
-
-type RunTakeoverIn struct {
-	RunRef
-	Reason string `json:"reason" jsonschema:"Why you are taking this run from its agent. Required; logged to the session and the card."`
-}
-
-// RunTakeover moves another agent's active run to this agent.
-func RunTakeover(c Ctx, in RunTakeoverIn) (*Run, error) {
-	if in.Run == "" {
-		return nil, fmt.Errorf("name the run to take over")
-	}
-	r, err := runbook.Takeover(c.Project, in.Run, c.agent(), in.Reason)
-	if err != nil {
-		return nil, err
-	}
-	o := runOut(r)
-	return &o, nil
-}
-
-type RunStepOut struct {
-	Step     RunStep  `json:"step"`
-	Verified bool     `json:"verified"`
-	Note     string   `json:"note"`
-	Finished bool     `json:"runFinished"`
-	Next     *RunStep `json:"next,omitempty"`
-	RunID    string   `json:"runId"`
-}
-
-// RunStepDone verifies evidence for the current step and advances. A failed
-// check is an error and the step stays current.
-func RunStepDone(c Ctx, in RunStepDoneIn) (*RunStepOut, error) {
-	r, err := c.resolveRun(in.Run)
-	if err != nil {
-		return nil, err
-	}
-	o, err := runbook.Complete(c.Project, r.ID, in.Evidence, c.agent())
-	if err != nil {
-		return nil, err
-	}
-	return stepOut(c, r.ID, o), nil
-}
-
-type RunSkipIn struct {
-	RunRef
-	Reason string `json:"reason" jsonschema:"Why the step is skipped. Required; it stays visible on the run."`
-}
-
-func RunSkip(c Ctx, in RunSkipIn) (*RunStepOut, error) {
-	r, err := c.resolveRun(in.Run)
-	if err != nil {
-		return nil, err
-	}
-	o, err := runbook.Skip(c.Project, r.ID, in.Reason, c.agent())
-	if err != nil {
-		return nil, err
-	}
-	return stepOut(c, r.ID, o), nil
-}
-
-func stepOut(c Ctx, runID string, o *runbook.Outcome) *RunStepOut {
-	out := &RunStepOut{Step: runStep(o.Step), Verified: o.Verified, Note: o.Note, Finished: o.Finished, RunID: runID}
-	if !o.Finished {
-		if r, err := runbook.Get(c.Project, runID); err == nil {
-			if cur := r.Current(); cur != nil {
-				n := runStep(*cur)
-				out.Next = &n
-			}
-		}
-	}
-	return out
-}
-
-type RunAbandonIn struct {
-	RunRef
-	Reason string `json:"reason" jsonschema:"Why. Required; logged to the session as a problem."`
-}
-
-func RunAbandon(c Ctx, in RunAbandonIn) (*Run, error) {
-	r, err := c.resolveRun(in.Run)
-	if err != nil {
-		return nil, err
-	}
-	r, err = runbook.Abandon(c.Project, r.ID, in.Reason, c.agent())
-	if err != nil {
-		return nil, err
-	}
-	o := runOut(r)
-	return &o, nil
 }
 
 // --------------------------------------------------------------- helpers

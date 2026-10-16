@@ -122,3 +122,19 @@ Sibling repos:
 - [gears-front](https://github.com/Syluxso/gears-front) — pre-auth Next.js site
 
 Earlier generations of Gears live in `Syluxso/gears`; nothing from them is carried over.
+
+Runbook runs (GRS-51, GRS-56, GRS-58) live in byz-orchestrator behind
+gears-api; the local run engine is retired. `gears runbook start <name>`
+(`--card`, `--step id[:kind]` for inline steps, `--key`), `gears runbook
+complete [kind:ref ...]` (`--run`, `--step`, `--note`; evidence
+`session:<id|short>`, `artifact:<file|id>`, `desk:<id>[:state]`,
+`card:<KEY>[:<State>]`, `commit:<sha>`), `gears runbook skip --reason`
+and `gears runbook status [run]` call gears-api (never the orchestrator),
+which checks that evidence exists in the workspace before a step advances;
+sync first so local entries are there. The MCP tools are `runbook_start`,
+`runbook_step_complete`, `runbook_step_skip` and `runbook_status`, each with
+an optional `agent`. `gears sync` pulls runs (table `runs`) into the
+`record_runs` / `record_run_steps` cache that `gears status`,
+`gears runbook list` and `gears runbook show run-...` read. Runbook
+authoring (`new`, `copy`, `update`, `delete`, `step add|update|remove|move`)
+still writes local `runbook--<slug>.yaml` drafts.
