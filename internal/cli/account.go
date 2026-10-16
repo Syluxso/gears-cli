@@ -67,7 +67,7 @@ per call and is not a gate.`,
 		}
 		fmt.Printf("logged in to %s as %s (label %s), token until %s\n", host, email, cr.Label, cr.ExpiresAt.Local().Format("2006-01-02"))
 
-		c, err := ctx()
+		c, err := ctxAny()
 		if err != nil {
 			fmt.Println("no project here; run gears init, then gears login again to register it")
 			return nil
@@ -140,7 +140,7 @@ var syncCmd = &cobra.Command{
 	Short: "Push local changes to gears-api, then pull and apply",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := ctx()
+		c, err := ctxAny()
 		if err != nil {
 			return err
 		}
@@ -178,7 +178,7 @@ var whoamiCmd = &cobra.Command{
 	Short: "Which API, whether the token works, which workspace this syncs to",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := ctx()
+		c, err := ctxAny()
 		if err != nil {
 			return err
 		}

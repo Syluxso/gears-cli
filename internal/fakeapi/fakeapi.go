@@ -94,6 +94,13 @@ type Server struct {
 	inviteSeq     int
 
 	runBodies []map[string]any // GRS-56: every run write's body
+
+	// GRS-80: the workspace served (SetWorkspace) and whether it is
+	// deleted (SetDeleted, or DELETE by an owner).
+	WSID, WSSlug string
+	Deleted      bool
+	DeletedAt    time.Time
+	DeletedBy    string
 }
 
 func New(prefix string) *Server {
@@ -214,6 +221,9 @@ func (s *Server) Subscribers() int {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
+	if s.deletedGate(w, r) || s.workspaces(w, r) { // GRS-80
+		return
+	}
 	switch {
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/board/events"):
 		s.stream(w, r)
@@ -309,10 +319,14 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case msg := <-ch:
-			if _, err := io.WriteString(w, msg); err != nil {
+			end := strings.HasSuffix(msg, streamEnd)
+			if _, err := io.WriteString(w, strings.TrimSuffix(msg, streamEnd)); err != nil {
 				return
 			}
 			fl.Flush()
+			if end {
+				return
+			}
 		}
 	}
 }

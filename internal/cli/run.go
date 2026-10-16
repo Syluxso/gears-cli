@@ -16,6 +16,7 @@ import (
 	"github.com/Syluxso/gears-cli/internal/api"
 	"github.com/Syluxso/gears-cli/internal/mcpserver"
 	"github.com/Syluxso/gears-cli/internal/session"
+	"github.com/Syluxso/gears-cli/internal/store"
 	"github.com/Syluxso/gears-cli/internal/sync"
 	"github.com/Syluxso/gears-cli/internal/verbs"
 )
@@ -274,6 +275,8 @@ func skipReason(err error) string {
 	switch {
 	case errors.Is(err, api.ErrNotLoggedIn):
 		return "not logged in (gears login)"
+	case errors.Is(err, store.ErrWorkspaceDeleted): // GRS-80
+		return err.Error()
 	case errors.Is(err, context.DeadlineExceeded), strings.Contains(err.Error(), "unreachable"):
 		return "offline (" + api.Host() + " unreachable)"
 	}

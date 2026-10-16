@@ -117,7 +117,7 @@ type CardPush struct {
 // cards_pushed_at, and card tombstones) and applies the API's answer:
 // numbers, keys, merged state ids. No board GET: the cache already holds
 // the API's states and prefix from its first sync.
-func PushCards(ctx context.Context, c *api.Client, p *project.Project) (*CardPush, error) {
+func pushCards(ctx context.Context, c *api.Client, p *project.Project) (*CardPush, error) {
 	db, err := store.Open(p)
 	if err != nil {
 		return nil, err
@@ -265,7 +265,7 @@ type CardPull struct {
 }
 
 // PullCards pulls the card tables after cards_cursor and applies them.
-func PullCards(ctx context.Context, c *api.Client, p *project.Project) (*CardPull, error) {
+func pullCards(ctx context.Context, c *api.Client, p *project.Project) (*CardPull, error) {
 	db, err := store.Open(p)
 	if err != nil {
 		return nil, err
@@ -584,6 +584,10 @@ func Live(ctx context.Context, o LiveOptions) error {
 		if ctx.Err() != nil {
 			return nil
 		}
+		if errors.Is(err, errWorkspaceGone) || api.IsWorkspaceDeleted(err) {
+			o.Logf("%s; the board stream stops", noteDeleted(o.Project, &api.Problem{Status: 410, Code: api.CodeWorkspaceDeleted}))
+			return err
+		}
 		var se *api.StreamError
 		if errors.As(err, &se) && se.Permanent() {
 			o.Logf("live board unavailable on %s (%d); cards still sync on each write and read. Not retrying.", hostName(o.Client.Host), se.Status)
@@ -603,6 +607,9 @@ func Live(ctx context.Context, o LiveOptions) error {
 }
 
 var errIdle = errors.New("stream idle")
+
+// errWorkspaceGone: the stream said workspace.deleted (GRS-80) and ended.
+var errWorkspaceGone = errors.New("workspace deleted on gears-api")
 
 // liveSession is one connection: open, catch up, pull after each burst,
 // until the stream ends. connected says whether it opened at all.
@@ -686,6 +693,8 @@ func liveSession(ctx context.Context, o LiveOptions, ws string) (connected bool,
 				pending = false
 			case strings.HasPrefix(l.s, ":"):
 				// comment: ": subscribed", ": ping"
+			case l.s == "event: workspace.deleted":
+				return true, errWorkspaceGone
 			case strings.HasPrefix(l.s, "event:"), strings.HasPrefix(l.s, "data:"):
 				// Every event (resync included) means: pull the card tables
 				// after cards_cursor, which catches up whatever was dropped.
@@ -733,4 +742,18 @@ func shortErr(err error, host string) string {
 		s = s[:120] + "…"
 	}
 	return s
+}
+
+// PushCards pushes the board's pending rows (pushCards); a 410 from
+// gears-api marks the cache deleted (GRS-80).
+func PushCards(ctx context.Context, c *api.Client, p *project.Project) (*CardPush, error) {
+	out, err := pushCards(ctx, c, p)
+	return out, noteDeleted(p, err)
+}
+
+// PullCards pulls and applies the card tables (pullCards); a 410 from
+// gears-api marks the cache deleted (GRS-80).
+func PullCards(ctx context.Context, c *api.Client, p *project.Project) (*CardPull, error) {
+	out, err := pullCards(ctx, c, p)
+	return out, noteDeleted(p, err)
 }

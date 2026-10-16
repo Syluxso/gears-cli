@@ -82,7 +82,22 @@ func Execute() error {
 
 // ctx resolves the binding from the working directory (walking up to the
 // workspace root), the project the directory is in, and the acting agent.
+//
+// GRS-80: a workspace deleted on gears-api refuses here, with how to
+// restore it. sync, login, whoami and the workspace commands use ctxAny.
 func ctx() (verbs.Ctx, error) {
+	c, err := ctxAt(mustCwd())
+	if err != nil {
+		return c, err
+	}
+	if err := c.CheckLive(); err != nil {
+		return c, err
+	}
+	return c, nil
+}
+
+// ctxAny is ctx for a workspace marked deleted too.
+func ctxAny() (verbs.Ctx, error) {
 	return ctxAt(mustCwd())
 }
 

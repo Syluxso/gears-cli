@@ -22,6 +22,9 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 		verbs.Status)
 	add(s, c, "arch", "The workspace's architecture artifact, arch--primary.md, in full: the master design doc (context, boundaries, current shape, open questions). Free-form, one per workspace; edit the file, then artifact_reconcile. status carries the same body. missing with a hint when the workspace has none (artifact_new prefix arch writes the stub).", verbs.Arch)
 
+	add(s, c, "workspace_list", "Your workspaces on gears-api (id, slug, name, prefix; here is this binding's). deleted=true lists your deleted workspaces instead (the ones you own) with deletedAt and deletedBy. Needs gears login.", verbs.WorkspaceList)
+	add(s, c, "workspace_delete", "Soft delete a workspace on gears-api (default this one): owners only, confirm must be its slug. Everything in it becomes unreachable everywhere, running runs stop, pending invites are revoked; nothing is erased. This cache keeps its data and refuses reads until a restore. Ask your person first. The same tool as the remote MCP.", verbs.WorkspaceDelete)
+	add(s, c, "workspace_restore", "Restore a deleted workspace you own (id or slug from workspace_list deleted=true; default this one). Everything in it is reachable again and this cache reads again; stopped runs and revoked invites stay so. Refused when a live workspace already uses its slug. Then sync.", verbs.WorkspaceRestore)
 	add(s, c, "people_list", "The people of this workspace (its members) from gears-api: id, name, email, role and the agent labels their devices use. Cached locally; offline it answers the cached list with stale: true. Call it before desk_send with assignedTo, to turn a name like Bob into his id.", verbs.PeopleList)
 	add(s, c, "members_list", "This workspace's members from gears-api (userId, name, email, role owner|member, status) and its pending invites (id, inviteeEmail, role). Live from the API, no local copy: needs gears login and a reachable API; offline it is an error that says so. all includes removed members.", verbs.MembersList)
 	add(s, c, "member_invite", "Invite an existing Gears account into this workspace by email (or userId), role member (default) or owner (owners only). The API refuses an email with no account (they must sign up first), someone already a member, or already invited; the error is the API's own words. The invitee accepts from the app's Home or invite_accept.", verbs.MemberInvite)
@@ -105,6 +108,13 @@ func New(c verbs.Ctx, version string) *mcp.Server {
 func add[In, Out any](s *mcp.Server, c verbs.Ctx, name, desc string, fn func(verbs.Ctx, In) (*Out, error)) {
 	mcp.AddTool(s, &mcp.Tool{Name: name, Description: desc},
 		func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
+			if !anyWorkspaceState[name] {
+				// GRS-80: a workspace deleted on gears-api refuses every
+				// tool but these, with how to restore it.
+				if err := c.CheckLive(); err != nil {
+					return nil, nil, err
+				}
+			}
 			out, err := fn(c, in)
 			if err != nil {
 				return nil, nil, err
@@ -116,6 +126,10 @@ func add[In, Out any](s *mcp.Server, c verbs.Ctx, name, desc string, fn func(ver
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}, out, nil
 		})
 }
+
+// anyWorkspaceState are the tools that work on a workspace marked deleted:
+// the workspace tools themselves, sync (which hears a restore) and whoami.
+var anyWorkspaceState = map[string]bool{"workspace_list": true, "workspace_delete": true, "workspace_restore": true, "sync": true, "whoami": true}
 
 // ServeStdio runs the server over stdin/stdout until the client goes away.
 func ServeStdio(ctx context.Context, s *mcp.Server) error {

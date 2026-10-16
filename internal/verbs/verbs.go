@@ -203,6 +203,9 @@ type ArtifactStats struct {
 
 // Status assembles everything an agent needs before it starts.
 func Status(c Ctx, _ StatusIn) (*StatusOut, error) {
+	if err := c.CheckLive(); err != nil { // GRS-80
+		return nil, err
+	}
 	out := &StatusOut{Project: c.Project.Slug, ProjectID: c.Project.ID, Root: c.Project.Root, Agent: c.agentInfo(), Prefix: c.Project.Prefix,
 		IsWorkspace: c.Project.IsWorkspace(), Desk: []DeskItem{}, Runs: []RunSummary{}, MyRuns: []RunSummary{}, Session: []SessionLine{},
 		Cards:     CardStats{ByState: []CardState{}, Mine: []CardLine{}, Ready: []CardLine{}},

@@ -416,6 +416,32 @@ code=$(curl -s -H "Authorization: Bearer $TOKEN" "$GEARS_API/api/v1/workspaces/$
 [ "$code" = "closed" ] || fail "stopped run's gate item not closed"
 echo "ok: stopped run's gate item closed"
 
+echo "== GRS-80: soft delete the workspace; every cache refuses; restore brings it all back"
+WS_SLUG=$(grep '^slug:' "$WS/.gears/project.yaml" | awk '{print $2}' | tr -d '\r')
+if ( cd "$WS" && "$G" workspace delete --confirm wrong >"$WORK/del.out" 2>&1 ); then fail "delete with a wrong confirm accepted"; fi
+grep -q "does not match" "$WORK/del.out" || { cat "$WORK/del.out"; fail "wrong confirm not explained"; }
+if ( cd "$WS" && "$G" workspace delete </dev/null >"$WORK/del.out" 2>&1 ); then fail "delete without confirm accepted"; fi
+( cd "$WS" && "$G" workspace delete --confirm "$WS_SLUG" --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['deleted']=='$WS_ID' and o['here'], o; print('ok: deleted', o['slug'])"
+if ( cd "$WS" && "$G" status >"$WORK/del.out" 2>&1 ); then fail "status of a deleted workspace answered"; fi
+grep -q "was deleted on gears-api (restore: gears workspace restore)" "$WORK/del.out" || { cat "$WORK/del.out"; fail "status does not say deleted"; }
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$GEARS_API/api/v1/workspaces/$WS_ID")
+[ "$code" = "410" ] || fail "GET deleted workspace: $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "{\"id\":\"$WS_ID\",\"slug\":\"$WS_SLUG\"}" "$GEARS_API/api/v1/workspaces")
+[ "$code" = "410" ] || fail "re-create of a deleted workspace: $code"
+( cd "$WS" && "$G" workspace list --deleted --json ) | python -c "import json,sys; o=json.load(sys.stdin); d=[w for w in o['deleted'] if w['id']=='$WS_ID']; assert len(d)==1 and d[0]['deletedBy']=='claude-code+local', o; print('ok: in the deleted list')"
+# The clone learns it on sync: marked, data kept, reads refused.
+if ( cd "$C" && "$G" sync >"$WORK/del.out" 2>&1 ); then fail "clone sync of a deleted workspace succeeded"; fi
+grep -q "was deleted on gears-api" "$WORK/del.out" || { cat "$WORK/del.out"; fail "clone sync does not say deleted"; }
+if ( cd "$C" && "$G" desk list >"$WORK/del.out" 2>&1 ); then fail "clone desk list of a deleted workspace answered"; fi
+python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); v=c.execute(\"SELECT value FROM sync_state WHERE key='workspace_deleted'\").fetchone(); n=c.execute('SELECT count(*) FROM session_entries').fetchone()[0]; assert v and n>0, (v,n); print('ok: clone marked deleted, kept', n, 'session entries')" "$C/.gears/.gearbox/local.db"
+# Restore from the clone; the root hears it on its next sync.
+( cd "$C" && "$G" workspace restore --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['workspace']['id']=='$WS_ID' and o['here'], o; print('ok: restored from the clone')"
+( cd "$C" && "$G" desk list --json >/dev/null ) || fail "clone desk list after restore"
+( cd "$WS" && "$G" sync --json ) | python -c "import json,sys; r=json.load(sys.stdin); assert any('live on gears-api again' in n for n in r.get('notes') or []), r; print('ok: root sync cleared the mark')"
+( cd "$WS" && "$G" status --json >/dev/null ) || fail "status after restore"
+# The ask run that was running is canceled, reason workspace deleted.
+( cd "$WS" && "$G" runbook show "$AQ" --json ) | python -c "import json,sys; r=json.load(sys.stdin)['run']; assert r['status']=='canceled' and r['cancelReason']=='workspace deleted', r; print('ok: running run stopped by the delete')"
+
 echo "== second sync is a no-op"
 # The push window includes the last push's second (stamps are to the
 # second), so the first sync after a write in that second re-sends it once.

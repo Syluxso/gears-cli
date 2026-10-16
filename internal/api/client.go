@@ -507,7 +507,7 @@ func (e *StreamError) Error() string {
 // refuses (401, 403).
 func (e *StreamError) Permanent() bool {
 	switch e.Status {
-	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusGone, http.StatusMethodNotAllowed, http.StatusNotImplemented:
 		return true
 	}
 	return false

@@ -9,7 +9,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,6 +68,24 @@ type ReconcileOut struct {
 }
 
 func Reconcile(ctx context.Context, c *api.Client, p *project.Project) (*ReconcileOut, error) {
+	out, err := reconcile(ctx, c, p)
+	return out, noteDeleted(p, err)
+}
+
+// noteDeleted turns gears-api's 410 gears.workspace_deleted into the local
+// mark (GRS-80): the cache keeps its data and refuses reads until a
+// restore or a later successful sync. Other errors pass through.
+func noteDeleted(p *project.Project, err error) error {
+	if err == nil || !api.IsWorkspaceDeleted(err) {
+		return err
+	}
+	if merr := store.MarkDeleted(p, workspaceSlug(p)); merr != nil {
+		return merr
+	}
+	return &store.DeletedError{Slug: workspaceSlug(p)}
+}
+
+func reconcile(ctx context.Context, c *api.Client, p *project.Project) (*ReconcileOut, error) {
 	out := &ReconcileOut{}
 	ws := workspaceOf(p)
 	dirty := false
@@ -297,7 +317,26 @@ func Run(ctx context.Context, c *api.Client, p *project.Project) (*Report, error
 		return nil, err
 	}
 	defer cardsMu.unlock()
+	r, err := run(ctx, c, p)
+	return r, noteDeleted(p, err)
+}
+
+func run(ctx context.Context, c *api.Client, p *project.Project) (*Report, error) {
 	ws := workspaceOf(p)
+	// GRS-80: a cache marked deleted asks gears-api first (a pull past
+	// every change): 410 is still deleted; an answer means it was restored,
+	// and the mark goes before anything here opens the cache. Offline, the
+	// mark stays.
+	revived := false
+	if err := store.CheckLive(p); errors.Is(err, store.ErrWorkspaceDeleted) && ws != "" {
+		if _, perr := c.Pull(ctx, ws, math.MaxInt64); perr != nil {
+			return nil, perr
+		}
+		if _, err := store.ClearDeleted(p); err != nil {
+			return nil, err
+		}
+		revived = true
+	}
 	var rec *ReconcileOut
 	if p.Workspace == "" {
 		// Reconcile binds and makes sure workspace and projects exist.
@@ -329,7 +368,9 @@ func Run(ctx context.Context, c *api.Client, p *project.Project) (*Report, error
 			return nil, err
 		}
 	}
-	db, err := store.Open(p)
+	// OpenAny (GRS-80): a cache marked deleted still syncs, so a restore
+	// done elsewhere is heard; a pull that goes through clears the mark.
+	db, err := store.OpenAny(p)
 	if err != nil {
 		return nil, err
 	}
@@ -369,6 +410,9 @@ func Run(ctx context.Context, c *api.Client, p *project.Project) (*Report, error
 	}
 	if err := pull(ctx, c, p, db, ws, r, cs); err != nil {
 		return r, err
+	}
+	if cleared, _ := store.ClearDeletedDB(db); cleared || revived {
+		r.Notes = append(r.Notes, "workspace "+workspaceSlug(p)+" is live on gears-api again; local reads work again")
 	}
 	if scope != "workspace" {
 		if err := setState(db, "artifact_scope", "workspace"); err != nil {

@@ -19,7 +19,24 @@ var schemaMu sync.Mutex
 
 // Open returns the local record for a project, creating it and its tables
 // on first use. Callers close it.
+//
+// GRS-80: a workspace gears-api said was deleted is refused here, so every
+// local read and write says so; sync and the workspace commands use
+// OpenAny.
 func Open(p *project.Project) (*sql.DB, error) {
+	db, err := OpenAny(p)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkLive(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+// OpenAny is Open for a workspace marked deleted too (sync, restore).
+func OpenAny(p *project.Project) (*sql.DB, error) {
 	if err := os.MkdirAll(p.GearboxPath(), 0o755); err != nil {
 		return nil, err
 	}

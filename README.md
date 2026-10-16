@@ -167,3 +167,20 @@ record: `runbook_runs`, `runbook_status`, `runbook_show` of an adopted copy,
 skip, refresh, the official catalog and the abilities need it. gears-api
 offline: the local cache, `stale: true`. `gears status` lists my running
 runs first (`myRuns`, each with its current step).
+
+**Workspace delete and restore** (GRS-80). A soft delete on gears-api,
+owners only: nothing is erased, everything in the workspace is unreachable
+for everyone until an owner restores it.
+
+    gears workspace list [--deleted]                 # your workspaces, or your deleted ones
+    gears workspace delete [<id|slug>] [--confirm <slug> | --yes]   # type the slug at the prompt on a TTY
+    gears workspace restore [<id|slug>]              # default this workspace
+
+MCP: `workspace_list {deleted?}`, `workspace_delete {workspace?, confirm}`,
+`workspace_restore {workspace?}` (the same names as the remote MCP). When a
+sync, login or the live board hears 410 `gears.workspace_deleted`, the
+cache is marked deleted: its data stays, and every local read (status,
+cards, desk, artifacts, sessions, runbooks, the MCP tools) refuses with
+"workspace <slug> was deleted on gears-api (restore: gears workspace
+restore)". A restore, here or elsewhere and then heard by `gears sync`,
+clears the mark.

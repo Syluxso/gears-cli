@@ -46,11 +46,19 @@ type fakeAPI struct {
 
 	// deskVisible answers pulls as an API with desk privacy (GRS-48).
 	deskVisible bool
+	// gone answers push and pull 410 gears.workspace_deleted (GRS-80).
+	gone bool
 }
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.gone && strings.HasSuffix(r.URL.Path, "/sync") {
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(http.StatusGone)
+		_, _ = io.WriteString(w, `{"status":410,"code":"gears.workspace_deleted","detail":"workspace synctest was deleted"}`)
+		return
+	}
 	switch {
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/sync"):
 		var in api.PushIn
