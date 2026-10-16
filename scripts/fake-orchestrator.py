@@ -26,6 +26,15 @@ OFFICIAL = [
 ]
 
 
+ABILITIES = {"items": [
+    {"kind": "card.move", "title": "Move a card", "tool": "card_move", "via": "mcp", "evidenceKinds": ["card"], "requiresEvidence": True,
+     "params": [{"name": "state", "type": "string", "required": True}]},
+    {"kind": "ask", "title": "Ask a person", "tool": "desk_send", "via": "mcp", "evidenceKinds": ["desk"], "requiresEvidence": True,
+     "params": [{"name": "question", "type": "string", "required": True}]},
+    {"kind": "note", "title": "Log a note", "tool": "session_new", "via": "mcp", "evidenceKinds": ["session"], "requiresEvidence": False, "params": []},
+], "evidenceKinds": ["session", "artifact", "commit", "desk", "card"]}
+
+
 def now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
@@ -65,6 +74,8 @@ class H(BaseHTTPRequestHandler):
         if not self.authed():
             return
         parts = self.path.split("/")
+        if self.path.split("?")[0] == "/api/v1/abilities":  # GRS-70: the step-kind catalog
+            return self.send(200, ABILITIES)
         if self.path.split("?")[0] == "/api/v1/runbooks":  # GRS-59: the official (public) catalog
             return self.send(200, {"items": OFFICIAL})
         if len(parts) == 5 and parts[1:4] == ["api", "v1", "runs"] and parts[4] in RUNS:

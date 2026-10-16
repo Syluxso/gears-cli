@@ -132,7 +132,7 @@ func TestRunbookToolsThroughAPI(t *testing.T) {
 	if len(list["runs"].([]any)) != 1 {
 		t.Fatalf("status list: %v", list)
 	}
-	shown := must("runbook_show", map[string]any{"key": id})
+	shown := must("runbook_show", map[string]any{"runbook": id})
 	if shown["run"].(map[string]any)["status"] != "completed" {
 		t.Fatalf("show: %v", shown)
 	}

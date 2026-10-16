@@ -378,6 +378,11 @@ echo '[{"id":"plan","kind":"ask","params":{"question":"goal?"}},{"id":"ship","ki
 ( cd "$WS" && "$G" runbook start starter-copy --json ) | python -c "import json,sys; r=json.load(sys.stdin)['run']; assert r['runbook']=='starter-copy' and [s['stepId'] for s in r['steps']]==['plan','ship'], r; print('ok: editable copy ran its own steps inline')"
 ( cd "$WS" && "$G" runbook start single-ticket-development --json ) | python -c "import json,sys; r=json.load(sys.stdin)['run']; assert r['runbookRef']=='single-ticket-development' and r['currentStep']=='take', r; print('ok: frozen copy ran the official ref')"
 ( cd "$C" && "$G" sync >/dev/null && "$G" runbook list --json ) | python -c "import json,sys; o=json.load(sys.stdin); a={r['slug']:r['frozen'] for r in o['adopted']}; assert a=={'single-ticket-development':True,'starter-copy':False}, o; print('ok: clone pulled the adopted copies')"
+echo "== GRS-70: runbook show and the step-kind catalog"
+( cd "$WS" && "$G" runbook abilities --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert [a['kind'] for a in o['items']]==['card.move','ask','note'], o; print('ok: abilities')"
+( cd "$WS" && "$G" runbook show starter-copy --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['source']=='adopted' and o['editable'] and o['abilitiesAvailable'] and o['steps'][0]['tool']=='desk_send', o; print('ok: show adopted, steps explained')"
+( cd "$WS" && "$G" runbook show single-ticket-development --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['source']=='adopted' and o['frozen'] and o['steps'][0]['evidenceKinds']==['card'], o; print('ok: show frozen copy')"
+( cd "$WS" && "$G" runbook show starter --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['source']=='official' and o['adopted']==['starter-copy'], o; print('ok: show official')"
 
 echo "== second sync is a no-op"
 # The push window includes the last push's second (stamps are to the

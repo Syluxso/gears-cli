@@ -116,3 +116,28 @@ func RunbookEdit(c Ctx, in RunbookEditIn) (*api.AdoptedRunbook, error) {
 	_ = runs.SaveRunbook(c.Project, *out)
 	return out, nil
 }
+
+type RunbookAbilitiesIn struct{}
+
+// RunbookAbilities is the step-kind catalog (GRS-70): byz-orchestrator's
+// abilities through gears-api. Needs gears login and the runbook service.
+func RunbookAbilities(c Ctx, _ RunbookAbilitiesIn) (*api.Abilities, error) {
+	ws, err := c.runsWorkspace()
+	if err != nil {
+		return nil, err
+	}
+	cl, err := runsClient()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := runCtx()
+	defer cancel()
+	out, err := cl.RunbookAbilities(ctx, ws)
+	if err != nil {
+		return nil, err
+	}
+	if out.Items == nil {
+		out.Items = []api.Ability{}
+	}
+	return out, nil
+}

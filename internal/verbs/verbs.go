@@ -7,6 +7,7 @@
 package verbs
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -385,10 +386,10 @@ func DeskList(c Ctx, in DeskListIn) (*DeskListOut, error) {
 }
 
 type DeskSendIn struct {
-	Type string `json:"type" jsonschema:"info (context, closes when read) | ask (expects an answer) | event (a webhook; dismiss or promote) | work (a task; closes when done) | handoff (tried, result, next; never closes)."`
-	To   string `json:"to,omitempty" jsonschema:"Agent label to address. Empty means anyone in the tenant."`
-	Text string `json:"text" jsonschema:"The item. For handoff: what was tried, the result, what comes next."`
-	Ref  string `json:"ref,omitempty" jsonschema:"Optional pointer: a card key, run id, or artifact file."`
+	Type       string `json:"type" jsonschema:"info (context, closes when read) | ask (expects an answer) | event (a webhook; dismiss or promote) | work (a task; closes when done) | handoff (tried, result, next; never closes)."`
+	To         string `json:"to,omitempty" jsonschema:"Agent label to address. Empty means anyone in the tenant."`
+	Text       string `json:"text" jsonschema:"The item. For handoff: what was tried, the result, what comes next."`
+	Ref        string `json:"ref,omitempty" jsonschema:"Optional pointer: a card key, run id, or artifact file."`
 	AssignedTo string `json:"assignedTo,omitempty" jsonschema:"The person the item is for: an id from people_list (call it first; never guess one). With to empty the item is for that person and any of their agents."`
 }
 
@@ -962,9 +963,9 @@ type RunbookListOut struct {
 	Runbooks   []Runbook            `json:"runbooks"`
 	Adopted    []api.AdoptedRunbook `json:"adopted"` // GRS-59: official copies, as last synced
 	Active     []RunSummary         `json:"activeRuns"`
-	Builtins   []string            `json:"builtins"`   // shipped runbooks a project may copy
-	Vocabulary map[string][]string `json:"vocabulary"` // kind -> checks
-	Rules      []string            `json:"rules"`
+	Builtins   []string             `json:"builtins"`   // shipped runbooks a project may copy
+	Vocabulary map[string][]string  `json:"vocabulary"` // kind -> checks
+	Rules      []string             `json:"rules"`
 }
 
 // RunbookList is the local runbook definitions (authoring only) and the
@@ -997,37 +998,82 @@ func RunbookList(c Ctx, _ RunbookListIn) (*RunbookListOut, error) {
 }
 
 type RunbookShowIn struct {
-	Key string `json:"key" jsonschema:"A runbook slug, or a run id (run-..., or a prefix of a cached one)."`
+	Runbook string `json:"runbook" jsonschema:"An adopted runbook's slug or an official runbook's ref (runbook_list). Locally also a runbook--<slug>.yaml draft, or a cached run id (run-...)."`
 }
 
+// RunbookShowOut is runbook_show's answer: the same fields as the remote
+// MCP (api.RunbookDetail), plus draft or run when the name was a local
+// draft or a cached run.
 type RunbookShowOut struct {
-	Runbook *Runbook            `json:"runbook,omitempty"`
-	Adopted *api.AdoptedRunbook `json:"adopted,omitempty"`
-	Run     *api.Run            `json:"run,omitempty"`
+	api.RunbookDetail
+	Draft *Runbook `json:"draft,omitempty"`
+	Run   *api.Run `json:"run,omitempty"`
 }
 
-// RunbookShow is a local definition, or a run from the cache of the gears
-// record (runbook_status reads it live).
+// RunbookShow is one runbook in full from gears-api (GRS-70): an adopted
+// slug or an official ref, each step explained from the step-kind catalog.
+// gears-api unreachable: the cached adopted copy (stale). A name gears-api
+// does not know may be a local draft; run-... reads the cached run.
 func RunbookShow(c Ctx, in RunbookShowIn) (*RunbookShowOut, error) {
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(in.Key)), "run-") {
-		r, err := runs.Get(c.Project, in.Key)
+	key := strings.TrimSpace(in.Runbook)
+	if key == "" {
+		return nil, errors.New("runbook required: an adopted slug or an official ref (runbook_list)")
+	}
+	if strings.HasPrefix(strings.ToLower(key), "run-") {
+		r, err := runs.Get(c.Project, key)
 		if err != nil {
 			return nil, err
 		}
-		return &RunbookShowOut{Run: r}, nil
+		return &RunbookShowOut{RunbookDetail: api.RunbookDetail{Runbook: r.Runbook, Source: "run", Title: r.Runbook, Steps: []api.RunbookDetailStep{}}, Run: r}, nil
 	}
-	if ad, _ := runs.Runbook(c.Project, in.Key); ad != nil {
-		return &RunbookShowOut{Adopted: ad}, nil
-	}
-	rb, err := runbook.Load(c.Project, in.Key)
-	if err != nil {
-		if r, rerr := runs.Get(c.Project, in.Key); rerr == nil {
-			return &RunbookShowOut{Run: r}, nil
+	var apiErr error
+	if ws, err := c.runsWorkspace(); err != nil {
+		apiErr = err
+	} else if cl, err := runsClient(); err != nil {
+		apiErr = err
+	} else {
+		ctx, cancel := runCtx()
+		defer cancel()
+		d, err := cl.RunbookDetail(ctx, ws, key)
+		if err == nil {
+			if d.Steps == nil {
+				d.Steps = []api.RunbookDetailStep{}
+			}
+			return &RunbookShowOut{RunbookDetail: *d}, nil
 		}
-		return nil, err
+		apiErr = err
+		var p *api.Problem
+		if errors.As(err, &p) && p.Status != 404 && p.Status < 500 {
+			return nil, err
+		}
+	}
+	var p *api.Problem
+	if !errors.As(apiErr, &p) {
+		if ad, _ := runs.Runbook(c.Project, key); ad != nil {
+			d := api.RunbookDetail{Runbook: ad.Slug, Source: "adopted", Title: ad.Title, Description: ad.Description, Frozen: ad.Frozen,
+				Editable: !ad.Frozen, SourceRef: ad.SourceRef, SourceVersion: ad.SourceVersion, Steps: []api.RunbookDetailStep{}, Stale: true,
+				Note: "gears-api did not answer (" + apiErr.Error() + "); this is the cached adopted copy, steps unexplained"}
+			for _, st := range ad.Steps {
+				kind := st.Kind
+				if kind == "" {
+					kind = "freeform"
+				}
+				d.Steps = append(d.Steps, api.RunbookDetailStep{ID: st.ID, Kind: kind, Title: st.Title, Params: st.Params})
+			}
+			return &RunbookShowOut{RunbookDetail: d}, nil
+		}
+	}
+	rb, err := runbook.Load(c.Project, key)
+	if err != nil {
+		return nil, fmt.Errorf("no runbook %s: not adopted or official on gears-api (%v), and no local draft", key, apiErr)
 	}
 	o := runbookOut(rb)
-	return &RunbookShowOut{Runbook: &o}, nil
+	d := api.RunbookDetail{Runbook: rb.Slug, Source: "draft", Title: rb.Title, Editable: true, Steps: []api.RunbookDetailStep{},
+		Note: "a local draft (runbook--" + rb.Slug + ".yaml) in the retired local vocabulary; not runnable as it stands"}
+	for _, st := range o.Steps {
+		d.Steps = append(d.Steps, api.RunbookDetailStep{ID: itoa(st.Idx), Kind: st.Kind, Title: st.Text})
+	}
+	return &RunbookShowOut{RunbookDetail: d, Draft: &o}, nil
 }
 
 // --------------------------------------------------------------- helpers

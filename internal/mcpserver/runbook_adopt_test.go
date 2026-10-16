@@ -106,10 +106,34 @@ func TestRunbookAdoptTools(t *testing.T) {
 	if len(list["adopted"].([]any)) != 2 {
 		t.Fatalf("list adopted: %v", list)
 	}
-	shown := must("runbook_show", map[string]any{"key": "starter-copy"})
-	if shown["adopted"].(map[string]any)["title"] != "Ours" {
+	// GRS-70: runbook_show, adopted by slug and official by ref, steps
+	// explained from the catalog; runbook_abilities is the catalog.
+	shown := must("runbook_show", map[string]any{"runbook": "starter-copy"})
+	if shown["title"] != "Ours" || shown["source"] != "adopted" || shown["editable"] != true || shown["abilitiesAvailable"] != true {
 		t.Fatalf("show: %v", shown)
 	}
+	if st := shown["steps"].([]any)[0].(map[string]any); st["kind"] != "ask" || st["tool"] != "desk_send" || st["evidenceKinds"].([]any)[0] != "desk" {
+		t.Fatalf("show step: %v", st)
+	}
+	off := must("runbook_show", map[string]any{"runbook": "single-ticket-development"})
+	if off["source"] != "adopted" || off["frozen"] != true || off["editable"] != false {
+		t.Fatalf("show frozen copy: %v", off)
+	}
+	if st := off["steps"].([]any)[1].(map[string]any); st["unknownKind"] != true {
+		t.Fatalf("unknown kind: %v", st)
+	}
+	mustFail("runbook_show", map[string]any{"runbook": "nope"}, "no runbook nope")
+	ab := must("runbook_abilities", map[string]any{})
+	if len(ab["items"].([]any)) != 3 || len(ab["evidenceKinds"].([]any)) != 5 {
+		t.Fatalf("abilities: %v", ab)
+	}
+	f.RunbooksOff = true
+	mustFail("runbook_abilities", map[string]any{}, "not available")
+	stale := must("runbook_show", map[string]any{"runbook": "starter-copy"})
+	if stale["abilitiesAvailable"] != false || stale["source"] != "adopted" {
+		t.Fatalf("show, runbooks off: %v", stale)
+	}
+	f.RunbooksOff = false
 
 	// Start by slug: gears-api resolves the copy.
 	started := must("runbook_start", map[string]any{"runbook": "single-ticket-development"})

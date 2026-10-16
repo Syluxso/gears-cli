@@ -194,15 +194,15 @@ func printRun(r *api.Run) {
 }
 
 var runbookShowCmd = &cobra.Command{
-	Use:   "show <slug|run-id>",
-	Short: "Show a runbook's steps, or a run's progress",
+	Use:   "show <slug|ref|run-id>",
+	Short: "One runbook in full: an adopted slug or official ref, steps explained from the step-kind catalog",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c, err := ctx()
 		if err != nil {
 			return err
 		}
-		out, err := verbs.RunbookShow(c, verbs.RunbookShowIn{Key: args[0]})
+		out, err := verbs.RunbookShow(c, verbs.RunbookShowIn{Runbook: args[0]})
 		if err != nil {
 			return err
 		}
@@ -213,11 +213,11 @@ var runbookShowCmd = &cobra.Command{
 			printRun(out.Run)
 			return nil
 		}
-		if out.Adopted != nil {
-			printAdopted(out.Adopted)
+		if out.Draft != nil {
+			printRunbook(out.Draft)
 			return nil
 		}
-		printRunbook(out.Runbook)
+		printDetail(&out.RunbookDetail)
 		return nil
 	},
 }

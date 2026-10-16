@@ -52,6 +52,10 @@ type Server struct {
 	used    map[int]bool
 	subs    map[chan string]struct{}
 
+	// RunbooksOff answers as a gears-api without BYZ_ORCHESTRATOR_URL:
+	// the official catalog, abilities, start, complete and skip are 501;
+	// record reads (runs, adopted copies) still answer.
+	RunbooksOff bool
 	// IgnoreTables answers a filtered pull as an API from before GRS-51:
 	// everything, no tables echo.
 	IgnoreTables bool

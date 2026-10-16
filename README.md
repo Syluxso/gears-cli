@@ -150,3 +150,11 @@ with `gears runbook edit <slug> [--title] [--description] [--steps-file]`
 (`runbook_edit`). Start either with `gears runbook start <slug>`. Copies are
 cached in `record_runbooks` (sync pulls table `runbooks`) and shown by
 `runbook list` / `runbook show <slug>`.
+
+`gears runbook show <slug|ref>` (MCP `runbook_show {runbook}`, GRS-70) is
+one runbook in full from gears-api: an adopted copy by slug or an official
+runbook by ref, with source, frozen/editable, sourceRef and each step's
+kind, params and, from the step-kind catalog, its tool, param spec and the
+evidence kinds that prove it. gears-api unreachable: the cached adopted copy
+(`stale: true`). `gears runbook abilities` (`runbook_abilities`) is that
+catalog, byz-orchestrator's `GET /abilities` through gears-api.

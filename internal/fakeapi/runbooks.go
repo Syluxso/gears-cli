@@ -18,7 +18,7 @@ import (
 // Copies land in the pull log as table runbooks.
 
 var (
-	reWsRunbooks = regexp.MustCompile(`^/api/v1/workspaces/([^/]+)/runbooks(?:/([^/]+))?$`)
+	reWsRunbooks = regexp.MustCompile(`^/api/v1/workspaces/([^/]+)/runbooks(?:/([^/]+))?(/detail)?$`)
 )
 
 func fakeOfficial() []api.OfficialRunbook {
@@ -68,9 +68,21 @@ func (s *Server) runbooks(w http.ResponseWriter, r *http.Request) bool {
 		s.put("runbooks", rb.ID, b, "upsert", "tester")
 	}
 	switch {
+	case m[3] != "" && r.Method == http.MethodGet:
+		s.runbookDetail(w, key, find(key), ok)
+	case key == "abilities" && r.Method == http.MethodGet:
+		if s.RunbooksOff {
+			problem(w, 501, "gears.runbooks_unavailable", "runbooks are not available on this gears-api")
+			return true
+		}
+		ok(200, fakeAbilities())
 	case key == "" && r.Method == http.MethodGet:
 		ok(200, map[string]any{"items": s.adoptedRunbooks()})
 	case key == "official" && r.Method == http.MethodGet:
+		if s.RunbooksOff {
+			problem(w, 501, "gears.runbooks_unavailable", "runbooks are not available on this gears-api")
+			return true
+		}
 		list := fakeOfficial()
 		for i := range list {
 			list[i].Adopted = []string{}
@@ -148,4 +160,57 @@ func (s *Server) runbooks(w http.ResponseWriter, r *http.Request) bool {
 		problem(w, 405, "gears.bad_request", "method")
 	}
 	return true
+}
+
+// fakeAbilities is the step-kind catalog (GRS-70): a few kinds.
+func fakeAbilities() api.Abilities {
+	return api.Abilities{Items: []api.Ability{
+		{Kind: "card.move", Title: "Move a card", Tool: "card_move", Via: "mcp", EvidenceKinds: []string{"card"}, RequiresEvidence: true,
+			Params: []api.AbilityParam{{Name: "state", Type: "string", Required: true}}},
+		{Kind: "ask", Title: "Ask a person", Tool: "desk_send", Via: "mcp", EvidenceKinds: []string{"desk"}, RequiresEvidence: true,
+			Params: []api.AbilityParam{{Name: "question", Type: "string", Required: true}}},
+		{Kind: "note", Title: "Log a note", Tool: "session_new", Via: "mcp", EvidenceKinds: []string{"session"}, Params: []api.AbilityParam{}},
+	}, EvidenceKinds: []string{"session", "artifact", "commit", "desk", "card"}}
+}
+
+// runbookDetail answers GET .../runbooks/:name/detail: the adopted copy,
+// else the official one, steps explained from fakeAbilities.
+func (s *Server) runbookDetail(w http.ResponseWriter, name string, ad *api.AdoptedRunbook, ok func(int, any)) {
+	var d *api.RunbookDetail
+	var steps []api.StepDef
+	if ad != nil {
+		d = &api.RunbookDetail{Runbook: ad.Slug, Source: "adopted", Title: ad.Title, Frozen: ad.Frozen, Editable: !ad.Frozen,
+			SourceRef: ad.SourceRef, SourceVersion: ad.SourceVersion}
+		steps = ad.Steps
+	} else if !s.RunbooksOff {
+		for _, o := range fakeOfficial() {
+			if o.Ref == name {
+				d = &api.RunbookDetail{Runbook: o.Ref, Source: "official", Title: o.Title, Frozen: o.Frozen, SourceRef: o.Ref, SourceVersion: o.Version}
+				steps = o.Steps
+			}
+		}
+	}
+	if d == nil {
+		problem(w, 404, "gears.not_found", "no adopted or official runbook "+name)
+		return
+	}
+	by := map[string]api.Ability{}
+	for _, a := range fakeAbilities().Items {
+		by[a.Kind] = a
+	}
+	d.AbilitiesAvailable = !s.RunbooksOff
+	if s.RunbooksOff {
+		d.Note = "the step-kind catalog could not be read"
+	}
+	d.Steps = []api.RunbookDetailStep{}
+	for _, st := range steps {
+		ds := api.RunbookDetailStep{ID: st.ID, Kind: st.Kind, Title: st.Title, Params: st.Params}
+		if a, found := by[st.Kind]; found && !s.RunbooksOff {
+			ds.Ability, ds.Tool, ds.EvidenceKinds, ds.RequiresEvidence, ds.ParamSpec = a.Title, a.Tool, a.EvidenceKinds, a.RequiresEvidence, a.Params
+		} else if !s.RunbooksOff {
+			ds.Unknown = true
+		}
+		d.Steps = append(d.Steps, ds)
+	}
+	ok(200, d)
 }

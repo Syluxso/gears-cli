@@ -162,7 +162,7 @@ func TestRunbookAuthoringOverMCP(t *testing.T) {
 	if del["deleted"] != true {
 		t.Fatalf("delete: %v", del)
 	}
-	mustFail("runbook_show", map[string]any{"key": slug}, "no runbook")
+	mustFail("runbook_show", map[string]any{"runbook": slug}, "no runbook")
 
 	// Copy from another project directory.
 	other := t.TempDir()
