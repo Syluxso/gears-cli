@@ -815,6 +815,9 @@ type RunbookStepAddIn struct {
 }
 
 func RunbookStepAdd(c Ctx, in RunbookStepAddIn) (*Runbook, error) {
+	if err := runs.RefuseAdopted(c.Project, in.Runbook); err != nil {
+		return nil, err
+	}
 	rb, err := runbook.Load(c.Project, in.Runbook)
 	if err != nil {
 		return nil, err
@@ -838,6 +841,9 @@ type RunbookStepUpdateIn struct {
 
 // RunbookStepUpdate edits one step in place and revalidates the runbook.
 func RunbookStepUpdate(c Ctx, in RunbookStepUpdateIn) (*Runbook, error) {
+	if err := runs.RefuseAdopted(c.Project, in.Runbook); err != nil {
+		return nil, err
+	}
 	rb, err := runbook.Load(c.Project, in.Runbook)
 	if err != nil {
 		return nil, err
@@ -856,6 +862,9 @@ type RunbookStepRemoveIn struct {
 
 // RunbookStepRemove deletes a step; later steps renumber.
 func RunbookStepRemove(c Ctx, in RunbookStepRemoveIn) (*Runbook, error) {
+	if err := runs.RefuseAdopted(c.Project, in.Runbook); err != nil {
+		return nil, err
+	}
 	rb, err := runbook.Load(c.Project, in.Runbook)
 	if err != nil {
 		return nil, err
@@ -875,6 +884,9 @@ type RunbookStepMoveIn struct {
 
 // RunbookStepMove reorders; refused when a when: would precede its step.
 func RunbookStepMove(c Ctx, in RunbookStepMoveIn) (*Runbook, error) {
+	if err := runs.RefuseAdopted(c.Project, in.Runbook); err != nil {
+		return nil, err
+	}
 	rb, err := runbook.Load(c.Project, in.Runbook)
 	if err != nil {
 		return nil, err
@@ -894,6 +906,9 @@ type RunbookUpdateIn struct {
 
 // RunbookUpdate changes title or target.
 func RunbookUpdate(c Ctx, in RunbookUpdateIn) (*Runbook, error) {
+	if err := runs.RefuseAdopted(c.Project, in.Runbook); err != nil {
+		return nil, err
+	}
 	rb, err := runbook.Load(c.Project, in.Runbook)
 	if err != nil {
 		return nil, err
@@ -916,6 +931,9 @@ type RunbookDeleteOut struct {
 
 // RunbookDelete removes the definition file. Past runs keep their copy.
 func RunbookDelete(c Ctx, in RunbookDeleteIn) (*RunbookDeleteOut, error) {
+	if err := runs.RefuseAdopted(c.Project, in.Runbook); err != nil {
+		return nil, err
+	}
 	if err := runbook.Delete(c.Project, in.Runbook); err != nil {
 		return nil, err
 	}
@@ -941,8 +959,9 @@ func RunbookCopy(c Ctx, in RunbookCopyIn) (*Runbook, error) {
 type RunbookListIn struct{}
 
 type RunbookListOut struct {
-	Runbooks   []Runbook           `json:"runbooks"`
-	Active     []RunSummary        `json:"activeRuns"`
+	Runbooks   []Runbook            `json:"runbooks"`
+	Adopted    []api.AdoptedRunbook `json:"adopted"` // GRS-59: official copies, as last synced
+	Active     []RunSummary         `json:"activeRuns"`
 	Builtins   []string            `json:"builtins"`   // shipped runbooks a project may copy
 	Vocabulary map[string][]string `json:"vocabulary"` // kind -> checks
 	Rules      []string            `json:"rules"`
@@ -963,6 +982,10 @@ func RunbookList(c Ctx, _ RunbookListIn) (*RunbookListOut, error) {
 	for _, rb := range books {
 		out.Runbooks = append(out.Runbooks, runbookOut(rb))
 	}
+	if out.Adopted, err = runs.Runbooks(c.Project); err != nil {
+		return nil, err
+	}
+	out.Rules = append(out.Rules, "Adopted runbooks are copies of official ones on gears-api (runbook_catalog, runbook_adopt): a frozen copy cannot be edited and runs the official steps; an editable copy changes with runbook_edit. Start either with runbook_start and its slug.")
 	recs, err := runs.List(c.Project, runs.Filter{Status: "running"})
 	if err != nil {
 		return nil, err
@@ -978,8 +1001,9 @@ type RunbookShowIn struct {
 }
 
 type RunbookShowOut struct {
-	Runbook *Runbook `json:"runbook,omitempty"`
-	Run     *api.Run `json:"run,omitempty"`
+	Runbook *Runbook            `json:"runbook,omitempty"`
+	Adopted *api.AdoptedRunbook `json:"adopted,omitempty"`
+	Run     *api.Run            `json:"run,omitempty"`
 }
 
 // RunbookShow is a local definition, or a run from the cache of the gears
@@ -991,6 +1015,9 @@ func RunbookShow(c Ctx, in RunbookShowIn) (*RunbookShowOut, error) {
 			return nil, err
 		}
 		return &RunbookShowOut{Run: r}, nil
+	}
+	if ad, _ := runs.Runbook(c.Project, in.Key); ad != nil {
+		return &RunbookShowOut{Adopted: ad}, nil
 	}
 	rb, err := runbook.Load(c.Project, in.Key)
 	if err != nil {

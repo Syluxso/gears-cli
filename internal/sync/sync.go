@@ -824,6 +824,16 @@ func apply(ctx context.Context, c *api.Client, p *project.Project, db *sql.DB, c
 			return false, err
 		}
 		return runs.SaveDB(db, run)
+	case "runbooks":
+		// GRS-59: adopted copies of official runbooks, pull-only.
+		if ch.Deleted || len(ch.Row) == 0 {
+			return runs.DeleteRunbookDB(db, ch.ID)
+		}
+		var rb api.AdoptedRunbook
+		if err := json.Unmarshal(ch.Row, &rb); err != nil {
+			return false, err
+		}
+		return runs.SaveRunbookDB(db, rb)
 	}
 	if isCardTable(ch.Table) {
 		return applyCard(db, ch)

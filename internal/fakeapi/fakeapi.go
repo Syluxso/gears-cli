@@ -228,6 +228,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.pull(w, r)
 	case s.membership(w, r):
 	case s.runs(w, r):
+	case s.runbooks(w, r):
 	default:
 		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusNotFound)

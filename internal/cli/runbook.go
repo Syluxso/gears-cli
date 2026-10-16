@@ -42,6 +42,11 @@ skip and status go to gears-api, which checks that evidence exists in the
 workspace before a step advances. list and show read the local cache of the
 gears record (gears sync pulls it); status reads live.
 
+Official runbooks (GRS-59) are frozen or editable: catalog lists them, adopt
+copies one into the workspace on gears-api, edit changes an editable copy.
+A frozen copy cannot be edited anywhere and runs the official steps; start
+an adopted runbook with start <slug>.
+
 The local run engine is retired. new, copy, update, delete and step
 add/update/remove/move still author runbook--<slug>.yaml drafts in
 .gears/artifacts/, in the old local vocabulary.
@@ -125,6 +130,12 @@ var runbookListCmd = &cobra.Command{
 		for _, rb := range out.Runbooks {
 			fmt.Printf("%-32s %-40s %-5s %d step%s\n", rb.Slug, rb.Title, rb.Target, len(rb.Steps), plural(len(rb.Steps), "", "s"))
 		}
+		if len(out.Adopted) > 0 {
+			fmt.Println("\nadopted (official copies)")
+			for _, rb := range out.Adopted {
+				fmt.Printf("%-32s %-40s %-9s %d step%s  from %s\n", rb.Slug, rb.Title, frozenWord(rb.Frozen), len(rb.Steps), plural(len(rb.Steps), "", "s"), rb.SourceRef)
+			}
+		}
 		if len(out.Active) > 0 {
 			fmt.Println("\nactive runs")
 			for _, r := range out.Active {
@@ -200,6 +211,10 @@ var runbookShowCmd = &cobra.Command{
 		}
 		if out.Run != nil {
 			printRun(out.Run)
+			return nil
+		}
+		if out.Adopted != nil {
+			printAdopted(out.Adopted)
 			return nil
 		}
 		printRunbook(out.Runbook)

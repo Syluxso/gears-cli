@@ -138,3 +138,15 @@ an optional `agent`. `gears sync` pulls runs (table `runs`) into the
 `gears runbook list` and `gears runbook show run-...` read. Runbook
 authoring (`new`, `copy`, `update`, `delete`, `step add|update|remove|move`)
 still writes local `runbook--<slug>.yaml` drafts.
+
+Official runbooks (GRS-59) are byz-orchestrator's catalog, each frozen or
+editable. `gears runbook catalog` (MCP `runbook_catalog`) lists them with
+the workspace's adopted copies; `gears runbook adopt <ref> [--as name]`
+(`runbook_adopt`) copies one into the workspace on gears-api. A frozen copy
+is read-only: gears-api, `runbook_edit` and every local authoring tool
+refuse it ("a frozen copy of the official runbook ..."), and its runs use
+the official steps. An editable copy (default slug `<ref>-copy`) changes
+with `gears runbook edit <slug> [--title] [--description] [--steps-file]`
+(`runbook_edit`). Start either with `gears runbook start <slug>`. Copies are
+cached in `record_runbooks` (sync pulls table `runbooks`) and shown by
+`runbook list` / `runbook show <slug>`.

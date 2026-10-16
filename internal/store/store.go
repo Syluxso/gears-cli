@@ -467,6 +467,19 @@ var schema = []string{
 		internal     INTEGER NOT NULL DEFAULT 0,
 		started_via  TEXT NOT NULL DEFAULT ''
 	)`,
+	// Adopted runbooks (GRS-59): the workspace's copies of official
+	// runbooks as gears-api holds them. Pulled by sync (table "runbooks")
+	// and written by runbook_adopt / runbook_edit from the API's answers.
+	// row is the copy as JSON; frozen ones refuse the authoring tools.
+	`CREATE TABLE IF NOT EXISTS record_runbooks (
+		id           TEXT PRIMARY KEY,
+		workspace_id TEXT NOT NULL DEFAULT '',
+		slug         TEXT NOT NULL,
+		source_ref   TEXT NOT NULL DEFAULT '',
+		frozen       INTEGER NOT NULL DEFAULT 0,
+		updated_at   TEXT NOT NULL DEFAULT '',
+		row          TEXT NOT NULL
+	)`,
 	`CREATE TABLE IF NOT EXISTS record_run_steps (
 		run_id      TEXT NOT NULL REFERENCES record_runs(id) ON DELETE CASCADE,
 		step_id     TEXT NOT NULL,

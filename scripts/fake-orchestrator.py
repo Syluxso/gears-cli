@@ -18,6 +18,14 @@ PORT, TOKEN = int(sys.argv[1]), sys.argv[2]
 RUNS = {}
 
 
+OFFICIAL = [
+    {"ref": "single-ticket-development", "version": 1, "title": "Single ticket development", "internal": False, "frozen": True,
+     "immutable": True, "steps": [{"id": "take", "kind": "card.move", "params": {"state": "In Progress"}}, {"id": "push", "kind": "git.push"}]},
+    {"ref": "starter", "version": 1, "title": "Starter runbook", "internal": False, "frozen": False,
+     "immutable": True, "steps": [{"id": "plan", "kind": "ask", "params": {"question": "goal?"}}, {"id": "log", "kind": "note"}]},
+]
+
+
 def now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
@@ -57,6 +65,8 @@ class H(BaseHTTPRequestHandler):
         if not self.authed():
             return
         parts = self.path.split("/")
+        if self.path.split("?")[0] == "/api/v1/runbooks":  # GRS-59: the official (public) catalog
+            return self.send(200, {"items": OFFICIAL})
         if len(parts) == 5 and parts[1:4] == ["api", "v1", "runs"] and parts[4] in RUNS:
             return self.send(200, RUNS[parts[4]])
         self.problem(404, "run.not_found", "run not found")
@@ -68,7 +78,7 @@ class H(BaseHTTPRequestHandler):
         parts = self.path.split("/")
         if self.path == "/api/v1/runs":
             rb = b.get("runbook", {})
-            steps = rb.get("steps") or [{"id": "backup"}, {"id": "migrate"}, {"id": "verify"}]
+            steps = rb.get("steps") or next((o["steps"] for o in OFFICIAL if o["ref"] == rb.get("ref")), None)                 or [{"id": "backup"}, {"id": "migrate"}, {"id": "verify"}]
             t = now()
             run = {"runId": "run-" + str(uuid.uuid4()), "runbook": rb.get("ref") or rb.get("name"), "runbookRef": rb.get("ref", ""),
                    "tenant": {"orgId": self.headers["X-Byz-Org-Id"], "tenantId": self.headers["X-Byz-Tenant-Id"]},

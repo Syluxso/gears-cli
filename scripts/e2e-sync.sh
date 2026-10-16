@@ -362,6 +362,23 @@ echo "ok: refused: $(head -1 "$WORK/rb.out")"
 ( cd "$C" && "$G" sync >/dev/null && "$G" runbook show "$RID" --json ) | python -c "import json,sys; r=json.load(sys.stdin)['run']; assert r['status']=='completed' and r['version']==4 and r['steps'][1]['skipReason']=='nothing to migrate', r; print('ok: clone pulled the run, v4, completed')"
 curl -s -H "Authorization: Bearer $TOKEN" "$GEARS_API/api/v1/workspaces/$WS_ID/runs" | python -c "import json,sys; d=json.load(sys.stdin); assert len(d)==1 and d[0]['id']=='$RID', d; print('ok: GET runs lists it')"
 
+echo "== GRS-59: adopt official runbooks, frozen and editable"
+( cd "$WS" && "$G" runbook catalog --json ) | python -c "import json,sys; o=json.load(sys.stdin); f={r['ref']:r['frozen'] for r in o['official']}; assert f=={'single-ticket-development':True,'starter':False}, o; print('ok: catalog', f)"
+( cd "$WS" && "$G" runbook adopt single-ticket-development --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['frozen'] and o['slug']=='single-ticket-development', o; print('ok: adopted frozen')"
+if ( cd "$WS" && "$G" runbook edit single-ticket-development --title nope >"$WORK/rb.out" 2>&1 ); then cat "$WORK/rb.out"; fail "frozen copy edited"; fi
+grep -q "frozen copy" "$WORK/rb.out" || { cat "$WORK/rb.out"; fail "frozen refusal"; }
+if ( cd "$WS" && "$G" runbook step add single-ticket-development "x" >"$WORK/rb.out" 2>&1 ); then cat "$WORK/rb.out"; fail "frozen copy authored"; fi
+grep -q "frozen copy" "$WORK/rb.out" || { cat "$WORK/rb.out"; fail "frozen authoring refusal"; }
+echo "ok: frozen copy refused: $(head -1 "$WORK/rb.out")"
+code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"title":"x"}' "$GEARS_API/api/v1/workspaces/$WS_ID/runbooks/single-ticket-development")
+[ "$code" = "409" ] || fail "gears-api edited a frozen copy ($code)"
+( cd "$WS" && "$G" runbook adopt starter --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert not o['frozen'] and o['slug']=='starter-copy', o; print('ok: adopted editable as starter-copy')"
+echo '[{"id":"plan","kind":"ask","params":{"question":"goal?"}},{"id":"ship","kind":"do"}]' > "$WORK/steps.json"
+( cd "$WS" && "$G" runbook edit starter-copy --title "Our starter" --steps-file "$WORK/steps.json" --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['title']=='Our starter' and [s['id'] for s in o['steps']]==['plan','ship'], o; print('ok: editable copy edited')"
+( cd "$WS" && "$G" runbook start starter-copy --json ) | python -c "import json,sys; r=json.load(sys.stdin)['run']; assert r['runbook']=='starter-copy' and [s['stepId'] for s in r['steps']]==['plan','ship'], r; print('ok: editable copy ran its own steps inline')"
+( cd "$WS" && "$G" runbook start single-ticket-development --json ) | python -c "import json,sys; r=json.load(sys.stdin)['run']; assert r['runbookRef']=='single-ticket-development' and r['currentStep']=='take', r; print('ok: frozen copy ran the official ref')"
+( cd "$C" && "$G" sync >/dev/null && "$G" runbook list --json ) | python -c "import json,sys; o=json.load(sys.stdin); a={r['slug']:r['frozen'] for r in o['adopted']}; assert a=={'single-ticket-development':True,'starter-copy':False}, o; print('ok: clone pulled the adopted copies')"
+
 echo "== second sync is a no-op"
 # The push window includes the last push's second (stamps are to the
 # second), so the first sync after a write in that second re-sends it once.
