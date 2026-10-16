@@ -407,6 +407,15 @@ echo "== GRS-72: run history from gears-api, and from the clone's pulled cache"
 ( cd "$WS" && "$G" runbook history "$SRID" ) | grep -q "run.canceled" || fail "history text has no run.canceled"
 python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); n=c.execute('SELECT count(*) FROM record_run_events WHERE run_id=?',(sys.argv[2],)).fetchone()[0]; assert n==5, n; print('ok: clone pulled the timeline,', n, 'events')" "$C/.gears/.gearbox/local.db" "$RID"
 
+echo "== GRS-74: an ask step lands on the desk; a stopped run closes its gate item"
+AQ=$( cd "$WS" && "$G" runbook start asking --step q:ask --step done --json | python -c "import json,sys; print(json.load(sys.stdin)['run']['id'])" )
+( cd "$WS" && "$G" sync >/dev/null && "$G" desk list --json ) | python -c "import json,sys; o=json.load(sys.stdin); it=o.get('items',o) if isinstance(o,dict) else o; a=[d for d in it if d.get('ref')=='$AQ#q']; assert len(a)==1 and a[0]['type']=='ask' and 'asking' in a[0]['text'], o; print('ok: ask item on the desk', a[0]['id'])"
+AQ2=$( cd "$WS" && "$G" runbook start asking --step w:gate --json | python -c "import json,sys; print(json.load(sys.stdin)['run']['id'])" )
+( cd "$WS" && "$G" runbook stop "$AQ2" --reason "not needed" >/dev/null )
+code=$(curl -s -H "Authorization: Bearer $TOKEN" "$GEARS_API/api/v1/workspaces/$WS_ID/desk?all=true" | python -c "import json,sys; o=json.load(sys.stdin); it=o.get('items',o) if isinstance(o,dict) else o; a=[d for d in it if d.get('ref')=='$AQ2#w']; assert len(a)==1 and a[0]['state']=='closed' and 'not needed' in a[0]['answer'], o; print('closed')")
+[ "$code" = "closed" ] || fail "stopped run's gate item not closed"
+echo "ok: stopped run's gate item closed"
+
 echo "== second sync is a no-op"
 # The push window includes the last push's second (stamps are to the
 # second), so the first sync after a write in that second re-sends it once.

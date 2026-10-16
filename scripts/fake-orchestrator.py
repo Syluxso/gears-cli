@@ -98,7 +98,8 @@ class H(BaseHTTPRequestHandler):
                    "status": "running", "currentStep": steps[0]["id"], "version": 1, "startedAt": t, "updatedAt": t, "steps": []}
             for i, s in enumerate(steps):
                 run["steps"].append({"id": s["id"], "kind": s.get("kind") or "freeform", "title": s.get("title") or s["id"],
-                                     "status": "current" if i == 0 else "pending", **({"startedAt": t} if i == 0 else {})})
+                                     "status": "current" if i == 0 else "pending", **({"startedAt": t} if i == 0 else {}),
+                                     **({"params": s["params"]} if s.get("params") else {})})
             RUNS[run["runId"]] = run
             return self.send(201, {"created": True, "run": run})
         if len(parts) == 6 and parts[5] == "cancel" and parts[4] in RUNS:  # GRS-69 (GRS-68 there)
