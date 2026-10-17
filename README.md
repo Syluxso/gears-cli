@@ -143,8 +143,9 @@ the server to it):
 | `runbook_adopt {ref, as?}` | `gears runbook adopt <ref> [--as]` | copy an official runbook into the workspace |
 | `runbook_edit {runbook, ...}` | `gears runbook edit <slug> [--title] [--description] [--steps-file]` | change an editable copy (a frozen one is refused) |
 | `runbook_unadopt {runbook}` | `gears runbook unadopt <slug>` | remove an adopted copy, frozen or editable (GRS-73) |
-| `runbook_start {runbook, cardKey?, steps?, idempotencyKey?}` | `gears runbook start <name> [--card] [--step id[:kind]] [--key]` | start a run: an adopted slug, a registered runbook, or inline steps |
+| `runbook_start {runbook, cardKey?, steps?, idempotencyKey?}` | `gears runbook start <name> [--card] [--step id[:kind]] [--key]` | start a run: an official ref directly (`ticket-development`, `sprint-development`, `audit-branch`; no adoption), an adopted slug, or inline steps |
 | `runbook_step_complete {run?, step?, evidence?, note?}` | `gears runbook complete [kind:ref ...] [--run] [--step] [--note]` | complete a step with evidence (`session:<id\|short>`, `artifact:<file\|id>`, `desk:<id>[:state]`, `card:<KEY>[:<State>]`, `commit:<sha>`); gears-api checks each exists first, so sync first |
+| `runbook_next {run?}` | `gears runbook next [run]` | what to do now: the current step (kind, params, executor `system`/`agent`, ability), instructions, `waitingOn` agent/system/human, done/total, the next titles; several running runs are listed to pick from (GRS-87) |
 | `runbook_step_skip {reason, run?, step?, note?}` | `gears runbook skip --reason` | skip a step with a reason |
 | `runbook_history {run}` | `gears runbook history <run>` | the run's timeline: started, each step done or skipped (evidence, who), completed or canceled; cached from sync pull for offline reads (GRS-72) |
 | `runbook_stop {run, reason}` | `gears runbook stop <run> --reason` | stop (cancel) a running run; the current step and the run become canceled (GRS-69) |
@@ -160,6 +161,75 @@ do not clash with a shared name: `runbook_new`, `runbook_copy`,
 (`gears runbook new|copy|update|delete|step ...`). They refuse an adopted
 slug. The local engine's tools are gone; `runbook_list` also carries the
 official catalog.
+
+## The agent loop (GRS-89)
+
+A local Claude Code or Grok Build session drives a run through the Gears
+MCP tools; the run, not the agent, decides what comes next. `gears init`
+writes the same loop into AGENTS.md (a block between `<!-- gears:start -->`
+and `<!-- gears:end -->`; an older block is updated in place).
+
+1. **Resume before starting.** `runbook_runs {mine: true, status: "running"}`.
+   One run: work on it. Several: ask which. None: start one,
+   `runbook_start {runbook: "ticket-development", cardKey: "GRS-12"}` (an
+   official ref starts directly; an adopted slug works too).
+2. **Ask.** `runbook_next {run}` answers the current step, `instructions`
+   and `waitingOn`:
+   - `agent`: do the work (code, git, session log), then
+     `runbook_step_complete {run, evidence: [...]}`. gears-api checks each
+     evidence item exists (sync first for local session entries and
+     artifacts); a refusal leaves the step current.
+   - `system`: the run does it itself (card moves and comments through
+     gears-api, as the run's starter). Do nothing; ask again. The agent's
+     desk gets an info item ("GRS-12 moved to Testing by the run"). If the
+     system could not, the step comes back as `agent` with `systemError`:
+     do it by hand.
+   - `human`: an approval or gate step. Only a person passes it, on the run
+     page (Approve / Reject / Request changes) or by answering the step's
+     desk item in the app (`approve`/`yes` approves; any other answer is a
+     change request). An agent's complete is 403 `step.needs_person`, its
+     `desk_answer` too. A reject or change request keeps the step current
+     and `runbook_next` says `rejected: <reason>, revise proposals`: revise,
+     then ask again.
+3. **Repeat** until `runbook_next` says `finished`.
+
+**Two human gates.** Designing the ticket is outside runs: a person writes
+and grooms the card before any run starts. Approving the audit's proposals
+is inside the run: `audit-branch`'s `approve` step waits for a person.
+
+Example (MCP calls, in order):
+
+```
+runbook_runs  {"mine": true, "status": "running"}            -> {"runs": []}
+runbook_start {"runbook": "ticket-development", "cardKey": "GRS-12"}
+                                                             -> {"created": true, "run": {"id": "run-0199...", ...}}
+runbook_next  {"run": "run-0199..."}                         -> {"step": {"id": "take", "kind": "card.move", "executor": "system"},
+                                                                 "waitingOn": "system", "instructions": "Move GRS-12 to In Progress: the system does this; wait, ..."}
+runbook_next  {"run": "run-0199..."}                         -> {"step": {"id": "branch", "kind": "git.branch", "executor": "agent"}, "waitingOn": "agent", ...}
+  (git switch -c grs-12-...; git commit ...)
+runbook_step_complete {"run": "run-0199...", "evidence": [{"kind": "commit", "ref": "3f2a9c1", "detail": {"branch": "grs-12-..."}}]}
+session_new   {"kind": "done", "text": "GRS-12: implemented ..."} -> {"id": "...", "short": "1a2b3c4d"}
+gears sync (or the sync tool)
+runbook_step_complete {"run": "run-0199...", "evidence": [{"kind": "session", "ref": "1a2b3c4d"}]}
+...
+runbook_next  {"run": "run-0199..."}                         -> {"finished": true, "message": "Run run-0199... is completed: nothing more to do on it."}
+```
+
+An audit run stops at its approval:
+
+```
+runbook_start {"runbook": "audit-branch", "cardKey": "GRS-12"}
+... review, propose (complete each with evidence) ...
+runbook_next  {"run": "run-01aa..."}  -> {"step": {"id": "approve", "kind": "approval"}, "waitingOn": "human", ...}
+  (wait; a person approves in the app)
+runbook_next  {"run": "run-01aa..."}  -> {"step": {"id": "approve", "decision": {"decision": "changes", "reason": "drop fix 3"}},
+                                          "instructions": "changes requested: drop fix 3, revise proposals. ..."}
+  (revise, tell the person; wait again)
+runbook_next  {"run": "run-01aa..."}  -> {"step": {"id": "apply", ...}, "waitingOn": "agent"}
+```
+
+From a shell: `gears runbook next [run]`, `gears runbook complete commit:<sha>`,
+`gears runbook runs --mine --status running`.
 
 **Without the orchestrator** (GRS-71) every read answers from the gears
 record: `runbook_runs`, `runbook_status`, `runbook_show` of an adopted copy,

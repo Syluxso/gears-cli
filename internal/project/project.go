@@ -390,12 +390,44 @@ This directory is bound to a Gears project. Start every session with:
 Then read the latest session entries it shows before doing anything else.
 Decisions go in .gears/artifacts/ as adr--*.md (gears artifact new adr "...").
 Log work as it happens: gears session new --kind done|decision|problem|next "...".
+
+### Runbook runs (the agent loop)
+
+A run, not you, decides the next step. With the Gears MCP tools:
+
+1. Resume first: runbook_runs {mine: true, status: "running"}. Start only
+   when there is nothing to resume:
+   runbook_start {runbook: "ticket-development", cardKey: "<KEY>"}.
+2. runbook_next {run}: the current step, instructions and waitingOn.
+3. waitingOn agent: do the work, then
+   runbook_step_complete {run, evidence: [{kind, ref}]} (a session_new
+   entry, commit sha, artifact, card or desk item; sync first so local
+   entries and artifacts are on gears-api).
+   waitingOn system: the run does it (card moves, comments); wait, ask again.
+   waitingOn human: a person approves on the run page or the step's desk
+   item; never complete or skip it. Rejected or changes requested: revise,
+   then wait.
+4. Repeat 2-3 until runbook_next says the run is finished.
+
+Two human gates: designing the ticket happens before any run; the audit's
+approval step is inside the run and only a person passes it.
 ` + agentsEnd + "\n"
 
 func ensureAgentsBlock(root string, res *InitResult) error {
 	path := filepath.Join(root, "AGENTS.md")
 	existing, err := os.ReadFile(path)
 	if err == nil && strings.Contains(string(existing), agentsStart) {
+		s := string(existing)
+		i, j := strings.Index(s, agentsStart), strings.Index(s, agentsEnd)
+		// GRS-89: an older block (no agent loop) is brought up to date in place.
+		if j > i && !strings.Contains(s[i:j], "runbook_next") {
+			rest := strings.TrimPrefix(s[j+len(agentsEnd):], "\n")
+			if err := os.WriteFile(path, []byte(s[:i]+agentsBlock+rest), 0o644); err != nil {
+				return err
+			}
+			res.Actions = append(res.Actions, "updated AGENTS.md (gears block)")
+			return nil
+		}
 		res.Actions = append(res.Actions, "kept    AGENTS.md (gears block present)")
 		return nil
 	}
