@@ -437,6 +437,12 @@ type DeskAnswerIn struct {
 }
 
 func DeskAnswer(c Ctx, in DeskAnswerIn) (*DeskItem, error) {
+	// GRS-88: a run's approval or gate item is a person's decision, made in
+	// the Gears app (run page or desk), never an agent's answer.
+	if it, err := desk.Get(c.Project, in.ID); err == nil && it.Type == "ask" && strings.HasPrefix(it.Ref, "run-") &&
+		(strings.Contains(it.Text, "(approval)") || strings.Contains(it.Text, "(gate)")) {
+		return nil, fmt.Errorf("%s is a run's approval step: it needs a person; they approve it in the Gears app (run page or desk), not here", it.Short())
+	}
 	it, err := desk.Answer(c.Project, in.ID, c.agent(), in.Answer)
 	if err != nil {
 		return nil, err

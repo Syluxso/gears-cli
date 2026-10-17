@@ -67,6 +67,24 @@ type RunStep struct {
 	DoneVia    string     `json:"doneVia,omitempty"`
 	StartedAt  *time.Time `json:"startedAt,omitempty"`
 	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+	// GRS-74: the step's params; GRS-84: who does it (system | agent) and
+	// whether the system did; GRS-88: a person's reject or change request.
+	Params       map[string]any `json:"params,omitempty"`
+	Executor     string         `json:"executor,omitempty"`
+	DoneBySystem bool           `json:"doneBySystem,omitempty"`
+	SystemError  string         `json:"systemError,omitempty"`
+	Decision     *RunDecision   `json:"decision,omitempty"`
+}
+
+// RunDecision is a person's decision on an approval or gate step (GRS-88).
+type RunDecision struct {
+	Decision string    `json:"decision"` // approve | reject | changes
+	Reason   string    `json:"reason,omitempty"`
+	Actor    string    `json:"actor,omitempty"`
+	Label    string    `json:"label,omitempty"`
+	Via      string    `json:"via,omitempty"`
+	Version  int       `json:"version"`
+	At       time.Time `json:"at"`
 }
 
 // StepDef is one step of an inline runbook definition.
@@ -144,6 +162,9 @@ type RunEvent struct {
 	Evidence []Evidence `json:"evidence,omitempty"`
 	Reason   string     `json:"reason,omitempty"`
 	Note     string     `json:"note,omitempty"`
+	// GRS-84: a step event's executor; doneBySystem when the system did it.
+	Executor     string `json:"executor,omitempty"`
+	DoneBySystem bool   `json:"doneBySystem,omitempty"`
 }
 
 // RunHistory is GET /runs/:id/events.
@@ -236,4 +257,50 @@ func (c *Client) ListRunsPage(ctx context.Context, ws string, f RunsFilter) ([]R
 		next = hdr.Get("X-Next-Cursor")
 	}
 	return out, next, err
+}
+
+// NextAbility is the current step's kind explained (GRS-87).
+type NextAbility struct {
+	Title            string   `json:"title"`
+	Description      string   `json:"description,omitempty"`
+	Tool             string   `json:"tool,omitempty"`
+	EvidenceKinds    []string `json:"evidenceKinds"`
+	RequiresEvidence bool     `json:"requiresEvidence"`
+}
+
+// NextStep is the run's current step as runbook_next shows it.
+type NextStep struct {
+	ID       string         `json:"id"`
+	Kind     string         `json:"kind"`
+	Title    string         `json:"title"`
+	Params   map[string]any `json:"params,omitempty"`
+	Executor    string         `json:"executor"`
+	Position    int            `json:"position"`
+	Ability     NextAbility    `json:"ability"`
+	SystemError string         `json:"systemError,omitempty"`
+	Decision *RunDecision   `json:"decision,omitempty"`
+}
+
+// RunNext is GET /runs/:id/next: what the agent does now.
+type RunNext struct {
+	RunID        string    `json:"runId,omitempty"`
+	Runbook      string    `json:"runbook,omitempty"`
+	Status       string    `json:"status,omitempty"`
+	Card         string    `json:"card,omitempty"`
+	Step         *NextStep `json:"step,omitempty"`
+	Instructions string    `json:"instructions"`
+	WaitingOn    string    `json:"waitingOn,omitempty"` // agent | system | human
+	Done         int       `json:"done"`
+	Total        int       `json:"total"`
+	Progress     string    `json:"progress,omitempty"`
+	Next         []string  `json:"next,omitempty"`
+	Finished     bool      `json:"finished,omitempty"`
+	Message      string    `json:"message,omitempty"`
+}
+
+// NextRun reads what to do now on a run (gears record; no orchestrator).
+func (c *Client) NextRun(ctx context.Context, runID string) (*RunNext, error) {
+	var out RunNext
+	_, err := c.Do(ctx, "GET", "/api/v1/runs/"+url.PathEscape(runID)+"/next", nil, &out)
+	return &out, err
 }

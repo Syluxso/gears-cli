@@ -6,6 +6,7 @@
     "runbook_edit": {"required": ["runbook"], "args": ["description", "runbook", "steps", "title"]},
     "runbook_history": {"required": ["run"], "args": ["run"]},
     "runbook_list": {"required": [], "args": []},
+    "runbook_next": {"required": [], "args": ["run"]},
     "runbook_runs": {"required": [], "args": ["by", "card", "cursor", "limit", "mine", "runbook", "status"]},
     "runbook_show": {"required": ["runbook"], "args": ["runbook"]},
     "runbook_start": {"required": ["runbook"], "args": ["cardKey", "idempotencyKey", "runbook", "steps"]},

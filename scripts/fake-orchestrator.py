@@ -8,6 +8,11 @@ POST /api/v1/runs/<id>/cancel (GRS-69) on an in-memory model.
 Requires Authorization: Bearer <token> and the three X-Byz-* headers, as
 the real service does for a trusted caller. A registered runbook (ref) has
 steps backup, migrate, verify. GET /healthz answers ok.
+
+GRS-84: card.move and card.comment steps have executor system; an agent's
+complete or skip of one is 409 step.system. POST /test/system-done/<id>
+completes the current system step as the orchestrator does after a run
+action (doneVia system), for the e2e to refresh.
 """
 import json
 import sys
@@ -88,6 +93,20 @@ class H(BaseHTTPRequestHandler):
             return
         b = self.body()
         parts = self.path.split("/")
+        if len(parts) == 4 and parts[1:3] == ["test", "system-done"] and parts[3] in RUNS:  # GRS-84
+            run, t = RUNS[parts[3]], now()
+            idx = [s["id"] for s in run["steps"]].index(run["currentStep"])
+            s = run["steps"][idx]
+            s.update({"status": "completed", "finishedAt": t, "doneLabel": "system:runbook", "doneVia": "system",
+                      "evidence": [{"kind": "card", "ref": "X-1", "detail": {"state": "Testing"}}]})
+            run["version"] += 1
+            run["updatedAt"] = t
+            if idx + 1 < len(run["steps"]):
+                run["steps"][idx + 1].update({"status": "current", "startedAt": t})
+                run["currentStep"] = run["steps"][idx + 1]["id"]
+            else:
+                run.update({"currentStep": "", "status": "completed", "finishedAt": t})
+            return self.send(200, run)
         if self.path == "/api/v1/runs":
             rb = b.get("runbook", {})
             steps = rb.get("steps") or next((o["steps"] for o in OFFICIAL if o["ref"] == rb.get("ref")), None)                 or [{"id": "backup"}, {"id": "migrate"}, {"id": "verify"}]
@@ -99,6 +118,7 @@ class H(BaseHTTPRequestHandler):
             for i, s in enumerate(steps):
                 run["steps"].append({"id": s["id"], "kind": s.get("kind") or "freeform", "title": s.get("title") or s["id"],
                                      "status": "current" if i == 0 else "pending", **({"startedAt": t} if i == 0 else {}),
+                                     "executor": "system" if (s.get("kind") or "") in ("card.move", "card.comment") else "agent",
                                      **({"params": s["params"]} if s.get("params") else {})})
             RUNS[run["runId"]] = run
             return self.send(201, {"created": True, "run": run})
@@ -124,6 +144,8 @@ class H(BaseHTTPRequestHandler):
                 return self.problem(409, "step.not_current", "the current step is " + run["currentStep"])
             idx = [s["id"] for s in run["steps"]].index(step)
             s, t = run["steps"][idx], now()
+            if s.get("executor") == "system":
+                return self.problem(409, "step.system", "the system does this step (" + step + "); agents cannot complete or skip it")
             s.update({"finishedAt": t, "doneBy": self.headers["X-Byz-Actor"], "doneLabel": b.get("agentLabel", ""), "doneVia": "gears-api"})
             if verb == "complete":
                 s.update({"status": "completed", "evidence": b.get("evidence", [])})

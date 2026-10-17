@@ -416,6 +416,24 @@ code=$(curl -s -H "Authorization: Bearer $TOKEN" "$GEARS_API/api/v1/workspaces/$
 [ "$code" = "closed" ] || fail "stopped run's gate item not closed"
 echo "ok: stopped run's gate item closed"
 
+echo "== GRS-84/87/88: runbook next, system steps, a person's approval"
+LR=$( cd "$WS" && "$G" runbook start loop --step take:card.move --step work --step ok:approval --json | python -c "import json,sys; r=json.load(sys.stdin)['run']; assert r['steps'][0]['executor']=='system' and r['steps'][1]['executor']=='agent', r; print(r['id'])" )
+( cd "$WS" && "$G" runbook next "$LR" --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['waitingOn']=='system' and o['step']['executor']=='system' and 'the system does this' in o['instructions'] and o['progress']=='0/3', o; print('ok: next waits on the system')"
+if ( cd "$WS" && "$G" runbook complete --run "$LR" commit:abc1234 >"$WORK/rb.out" 2>&1 ); then cat "$WORK/rb.out"; fail "agent completed a system step"; fi
+grep -q "the system does this step" "$WORK/rb.out" || { cat "$WORK/rb.out"; fail "system step refusal unclear"; }
+curl -sf -X POST -H "Authorization: Bearer e2e-orch-token" -H "X-Byz-Org-Id: $ORG" -H "X-Byz-Tenant-Id: $TEN" -H "X-Byz-Actor: e2e" "http://127.0.0.1:$ORCH_PORT/test/system-done/$LR" >/dev/null || fail "fake system step"
+( cd "$WS" && "$G" runbook status "$LR" --refresh --json ) | python -c "import json,sys; r=json.load(sys.stdin)['run']; assert r['steps'][0]['doneBySystem'] and r['currentStep']=='work', r; print('ok: done by system')"
+( cd "$WS" && "$G" runbook next --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert '$LR' in [r['id'] for r in o['runs']] and 'which one' in o['message'], o; print('ok: several running runs are listed to pick from')"
+( cd "$WS" && "$G" runbook next "$LR" --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['waitingOn']=='agent' and o['step']['id']=='work', o; print('ok: next is the agent step')"
+( cd "$WS" && "$G" runbook complete --run "$LR" commit:abc1234 >/dev/null )
+( cd "$WS" && "$G" runbook next "$LR" --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['waitingOn']=='human' and o['step']['kind']=='approval', o; print('ok: approval waits on a person')"
+if ( cd "$WS" && "$G" runbook complete --run "$LR" >"$WORK/rb.out" 2>&1 ); then cat "$WORK/rb.out"; fail "agent completed an approval step"; fi
+grep -q "needs a person" "$WORK/rb.out" || { cat "$WORK/rb.out"; fail "approval refusal unclear"; }
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"decision":"changes","reason":"drop fix 3"}' "$GEARS_API/api/v1/runs/$LR/steps/-/decision" >/dev/null || fail "change request"
+( cd "$WS" && "$G" runbook next "$LR" --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['step']['decision']['reason']=='drop fix 3' and 'changes requested: drop fix 3' in o['instructions'], o; print('ok: the agent sees the change request')"
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"decision":"approve"}' "$GEARS_API/api/v1/runs/$LR/steps/ok/decision" >/dev/null || fail "approve"
+( cd "$WS" && "$G" runbook next "$LR" --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['finished'] and o['status']=='completed', o; print('ok: approved, run finished')"
+
 echo "== GRS-80: soft delete the workspace; every cache refuses; restore brings it all back"
 WS_SLUG=$(grep '^slug:' "$WS/.gears/project.yaml" | awk '{print $2}' | tr -d '\r')
 if ( cd "$WS" && "$G" workspace delete --confirm wrong >"$WORK/del.out" 2>&1 ); then fail "delete with a wrong confirm accepted"; fi

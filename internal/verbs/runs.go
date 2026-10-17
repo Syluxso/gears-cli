@@ -391,6 +391,7 @@ type RunsStep struct {
 	Kind      string     `json:"kind"`
 	Title     string     `json:"title,omitempty"`
 	Position  int        `json:"position"`
+	Executor  string     `json:"executor,omitempty"` // GRS-84: system | agent
 	StartedAt *time.Time `json:"startedAt,omitempty"`
 }
 
@@ -427,7 +428,7 @@ func runsItem(r api.Run) RunsItem {
 		}
 	}
 	if cur := runs.Current(&r); cur != nil {
-		out.CurrentStep = &RunsStep{ID: cur.StepID, Kind: cur.Kind, Title: cur.Title, Position: cur.Position, StartedAt: cur.StartedAt}
+		out.CurrentStep = &RunsStep{ID: cur.StepID, Kind: cur.Kind, Title: cur.Title, Position: cur.Position, Executor: cur.Executor, StartedAt: cur.StartedAt}
 	}
 	out.Progress = fmt.Sprintf("%d/%d", out.Done, out.Total)
 	return out
@@ -481,4 +482,120 @@ func RunbookRuns(c Ctx, in RunbookRunsIn) (*RunbookRunsOut, error) {
 		out.Runs = append(out.Runs, runsItem(r))
 	}
 	return out, nil
+}
+
+// ------------------------------------------------------------ runbook_next
+
+// RunbookNextIn names the run (GRS-87); the same arguments as the remote
+// MCP's runbook_next.
+type RunbookNextIn struct {
+	Run string `json:"run,omitempty" jsonschema:"Run id (run-<uuid>, or a prefix of a cached one). Omit for your one running run; with several they are listed to pick from."`
+	AgentOpt
+}
+
+// RunbookNextOut is what to do now, or the runs to pick from.
+type RunbookNextOut struct {
+	api.RunNext
+	Runs  []RunsItem `json:"runs,omitempty"`
+	Stale bool       `json:"stale,omitempty"`
+	Note  string     `json:"note,omitempty"`
+}
+
+// RunbookNext asks gears-api what the agent does now on a run (it needs no
+// orchestrator). With no run: the one running run this agent started; with
+// several, they are listed to pick from. gears-api offline: the cached run
+// with stale: true.
+func RunbookNext(c Ctx, in RunbookNextIn) (*RunbookNextOut, error) {
+	agent := c.agentOr(in.Agent)
+	key := strings.TrimSpace(in.Run)
+	cl, err := runsClient()
+	apiErr := err
+	if err == nil {
+		if key == "" {
+			ws, err := c.runsWorkspace()
+			if err != nil {
+				return nil, err
+			}
+			ctx, cancel := runCtx()
+			list, _, err := cl.ListRunsPage(ctx, ws, api.RunsFilter{Status: "running", Agent: agent, Limit: 20})
+			cancel()
+			if err != nil {
+				return nil, err
+			}
+			switch len(list) {
+			case 0:
+				return nil, fmt.Errorf("%s has no running run; start one with runbook_start or pass run", agent)
+			case 1:
+				key = list[0].ID
+			default:
+				out := &RunbookNextOut{RunNext: api.RunNext{Message: fmt.Sprintf("%s has %d running runs; which one?", agent, len(list)),
+					Instructions: "Ask which run to work on (or pick by card), then call runbook_next with run."}}
+				for i := range list {
+					c.cacheRun(&list[i])
+					out.Runs = append(out.Runs, runsItem(list[i]))
+				}
+				return out, nil
+			}
+		}
+		id, err := c.pickRun(cl, key, agent)
+		if err != nil {
+			return nil, err
+		}
+		ctx, cancel := runCtx()
+		defer cancel()
+		n, err := cl.NextRun(ctx, id)
+		if err == nil {
+			return &RunbookNextOut{RunNext: *n}, nil
+		}
+		var p *api.Problem
+		if errors.As(err, &p) && p.Status < 500 {
+			return nil, err
+		}
+		apiErr = err
+	}
+	if key == "" {
+		return nil, fmt.Errorf("gears-api did not answer (%v); pass run to read the cached one", apiErr)
+	}
+	r, err := runs.Get(c.Project, key)
+	if err != nil {
+		return nil, fmt.Errorf("gears-api did not answer (%v); %w", apiErr, err)
+	}
+	return cachedNext(r, apiErr), nil
+}
+
+// cachedNext is runbook_next from a cached run (no ability detail).
+func cachedNext(r *api.Run, apiErr error) *RunbookNextOut {
+	it := runsItem(*r)
+	out := &RunbookNextOut{RunNext: api.RunNext{RunID: r.ID, Runbook: r.Runbook, Status: r.Status, Card: r.CardKey, Done: it.Done, Total: it.Total,
+		Progress: it.Progress}, Stale: true, Note: "gears-api did not answer (" + apiErr.Error() + "); this is the local cache"}
+	if r.Status != "running" {
+		out.Finished = true
+		out.Message = fmt.Sprintf("Run %s is %s: nothing more to do on it.", r.ID, r.Status)
+		out.Instructions = out.Message
+		return out
+	}
+	cur := runs.Current(r)
+	if cur == nil {
+		out.Instructions = "The run has no current step in the cache; try again when gears-api answers."
+		return out
+	}
+	exec := cur.Executor
+	if exec != "system" {
+		exec = "agent"
+	}
+	out.Step = &api.NextStep{ID: cur.StepID, Kind: cur.Kind, Title: cur.Title, Params: cur.Params, Executor: exec, Position: cur.Position, Decision: cur.Decision}
+	switch {
+	case exec == "system":
+		out.WaitingOn, out.Instructions = "system", cur.Title+": the system does this; wait, then call runbook_next again."
+	case cur.Kind == "approval" || cur.Kind == "gate":
+		out.WaitingOn, out.Instructions = "human", cur.Title+": waiting for a person to approve; do not complete it."
+	default:
+		out.WaitingOn, out.Instructions = "agent", cur.Title+": do it, then runbook_step_complete with evidence."
+	}
+	for _, s := range r.Steps {
+		if s.Position > cur.Position {
+			out.Next = append(out.Next, s.Title)
+		}
+	}
+	return out
 }

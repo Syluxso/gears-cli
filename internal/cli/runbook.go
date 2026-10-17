@@ -246,8 +246,19 @@ func printRun(r *api.Run) {
 		if s.SkipReason != "" {
 			line += "  (" + s.SkipReason + ")"
 		}
-		if s.DoneLabel != "" {
+		if s.DoneBySystem {
+			line += "  done by system"
+		} else if s.DoneLabel != "" {
 			line += "  by " + s.DoneLabel
+		}
+		if s.Executor == "system" && !s.DoneBySystem {
+			line += "  (system)"
+		}
+		if s.SystemError != "" {
+			line += "  [system could not: " + s.SystemError + "]"
+		}
+		if s.Decision != nil {
+			line += "  [" + s.Decision.Decision + ": " + s.Decision.Reason + "]"
 		}
 		fmt.Println(line)
 	}
@@ -414,6 +425,56 @@ a cached one. A finished run is refused.`,
 			return nil
 		}
 		printRun(out)
+		return nil
+	},
+}
+
+var runbookNextCmd = &cobra.Command{
+	Use:   "next [run]",
+	Short: "What to do now on a run: the current step, who it waits on, instructions (GRS-87)",
+	Long: `Asks gears-api what to do now on a run (no orchestrator needed): the
+current step with its kind, executor (system or agent) and ability, a
+one-line instruction, and whether it waits on you (agent), the system or a
+person (human). Omit run for your one running run.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := ctx()
+		if err != nil {
+			return err
+		}
+		in := verbs.RunbookNextIn{}
+		if len(args) == 1 {
+			in.Run = args[0]
+		}
+		out, err := verbs.RunbookNext(c, in)
+		if err != nil {
+			return err
+		}
+		if emit(out) {
+			return nil
+		}
+		if out.Note != "" {
+			fmt.Println("(" + out.Note + ")")
+		}
+		if len(out.Runs) > 0 {
+			fmt.Println(out.Message)
+			for _, r := range out.Runs {
+				fmt.Printf("  %s  %s  %s  %s\n", r.ID, r.Runbook, r.Card, r.Progress)
+			}
+			return nil
+		}
+		fmt.Printf("run %s  %s  %s  %d/%d", out.RunID, out.Runbook, out.Status, out.Done, out.Total)
+		if out.Card != "" {
+			fmt.Printf("  card %s", out.Card)
+		}
+		fmt.Println()
+		if out.Step != nil {
+			fmt.Printf("  step %s (%s, %s)  waiting on %s\n", out.Step.ID, out.Step.Kind, out.Step.Executor, out.WaitingOn)
+		}
+		fmt.Println("  " + out.Instructions)
+		if len(out.Next) > 0 {
+			fmt.Println("  then: " + strings.Join(out.Next, " / "))
+		}
 		return nil
 	},
 }
@@ -761,6 +822,6 @@ func init() {
 
 	runbookStepCmd.AddCommand(runbookStepAddCmd, runbookStepUpdateCmd, runbookStepRemoveCmd, runbookStepMoveCmd)
 	runbookCmd.AddCommand(runbookNewCmd, runbookCopyCmd, runbookUpdateCmd, runbookDeleteCmd, runbookListCmd, runbookShowCmd, runbookStartCmd,
-		runbookStepCmd, runbookCompleteCmd, runbookSkipCmd, runbookStopCmd, runbookHistoryCmd, runbookStatusCmd, runbookRunsCmd)
+		runbookStepCmd, runbookCompleteCmd, runbookSkipCmd, runbookStopCmd, runbookNextCmd, runbookHistoryCmd, runbookStatusCmd, runbookRunsCmd)
 	root.AddCommand(runbookCmd)
 }

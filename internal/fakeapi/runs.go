@@ -26,6 +26,7 @@ var (
 	reRunStep = regexp.MustCompile(`^/api/v1/runs/([^/]+)/steps/([^/]+)/(complete|skip)$`)
 	reRunStop = regexp.MustCompile(`^/api/v1/runs/([^/]+)/cancel$`)
 	reRunEvts = regexp.MustCompile(`^/api/v1/runs/([^/]+)/events$`)
+	reRunNext = regexp.MustCompile(`^/api/v1/runs/([^/]+)/next$`)
 )
 
 // RunBodies are the request bodies of every run write, in order.
@@ -52,7 +53,8 @@ func (s *Server) getRun(id string) *api.Run {
 
 func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 	path := r.URL.Path
-	if !reWsRuns.MatchString(path) && !reRun.MatchString(path) && !reRunStep.MatchString(path) && !reRunStop.MatchString(path) && !reRunEvts.MatchString(path) {
+	if !reWsRuns.MatchString(path) && !reRun.MatchString(path) && !reRunStep.MatchString(path) && !reRunStop.MatchString(path) && !reRunEvts.MatchString(path) &&
+		!reRunNext.MatchString(path) {
 		return false
 	}
 	s.mu.Lock()
@@ -90,7 +92,11 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 			if kind == "" {
 				kind = "freeform"
 			}
-			st := api.RunStep{RunID: run.ID, StepID: d.ID, Position: i + 1, Kind: kind, Title: d.ID, Status: "pending", Evidence: []api.Evidence{}}
+			st := api.RunStep{RunID: run.ID, StepID: d.ID, Position: i + 1, Kind: kind, Title: d.ID, Status: "pending", Evidence: []api.Evidence{},
+				Params: d.Params, Executor: "agent"}
+			if kind == "card.move" || kind == "card.comment" { // GRS-84: the system's
+				st.Executor = "system"
+			}
 			if i == 0 {
 				st.Status, st.StartedAt = "current", &now
 				run.CurrentStep = d.ID
@@ -143,6 +149,43 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 			run.Stale, run.Note = true, "not refreshed: runbooks are not available on this gears-api; this is the gears record"
 		}
 		ok(http.StatusOK, run)
+	case reRunNext.MatchString(path): // GRS-87
+		run := s.getRun(reRunNext.FindStringSubmatch(path)[1])
+		if run == nil {
+			problem(w, 404, "gears.not_found", "not found")
+			return true
+		}
+		out := api.RunNext{RunID: run.ID, Runbook: run.Runbook, Status: run.Status, Card: run.CardKey, Total: len(run.Steps)}
+		for _, st := range run.Steps {
+			if st.Status == "completed" || st.Status == "skipped" {
+				out.Done++
+			}
+		}
+		out.Progress = strconv.Itoa(out.Done) + "/" + strconv.Itoa(out.Total)
+		if run.Status != "running" {
+			out.Finished, out.Message = true, "Run "+run.ID+" is "+run.Status+": nothing more to do on it."
+			out.Instructions = out.Message
+			ok(http.StatusOK, out)
+			return true
+		}
+		for _, st := range run.Steps {
+			switch {
+			case st.Status == "current":
+				out.Step = &api.NextStep{ID: st.StepID, Kind: st.Kind, Title: st.Title, Params: st.Params, Executor: st.Executor, Position: st.Position,
+					Ability: api.NextAbility{Title: st.Kind, EvidenceKinds: []string{"commit"}, RequiresEvidence: true}}
+				switch {
+				case st.Executor == "system":
+					out.WaitingOn, out.Instructions = "system", st.Title+": the system does this; wait, then call runbook_next again."
+				case st.Kind == "approval" || st.Kind == "gate":
+					out.WaitingOn, out.Instructions = "human", st.Title+": waiting for a person to approve. Do not complete it."
+				default:
+					out.WaitingOn, out.Instructions = "agent", st.Title+". Then runbook_step_complete with evidence commit."
+				}
+			case st.Status == "pending":
+				out.Next = append(out.Next, st.Title)
+			}
+		}
+		ok(http.StatusOK, out)
 	case reRunEvts.MatchString(path): // GRS-72
 		run := s.getRun(reRunEvts.FindStringSubmatch(path)[1])
 		if run == nil {
@@ -204,6 +247,19 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 		if step != run.CurrentStep {
 			problem(w, 409, "step.not_current", "the current step is "+run.CurrentStep)
 			return true
+		}
+		for _, st := range run.Steps {
+			if st.StepID != step {
+				continue
+			}
+			if m[3] == "complete" && st.Executor == "system" {
+				problem(w, 409, "step.system", "the system does this step ("+st.StepID+" "+st.Kind+"); wait for it, runbook_next shows when it is done")
+				return true
+			}
+			if st.Kind == "approval" || st.Kind == "gate" {
+				problem(w, 403, "step.needs_person", "step "+st.StepID+" ("+st.Kind+") needs a person")
+				return true
+			}
 		}
 		for _, e := range in.Evidence {
 			if e.Ref == "missing" {
