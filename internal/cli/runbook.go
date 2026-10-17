@@ -39,6 +39,7 @@ var (
 	rbLimit      int
 	rbCursor     string
 	rbOwner      string
+	rbHook       bool
 )
 
 var runbookRunsCmd = &cobra.Command{
@@ -472,9 +473,21 @@ var runbookNextCmd = &cobra.Command{
 	Long: `Asks gears-api what to do now on a run (no orchestrator needed): the
 current step with its kind, executor (system or agent) and ability, a
 one-line instruction, and whether it waits on you (agent), the system or a
-person (human). Omit run for your one running run.`,
+person (human). Omit run for the one running run you own.
+
+--hook is the Claude Code Stop hook (gears hooks install writes it): it reads
+the hook JSON on stdin and, only when a running run this agent label OWNS
+waits on the agent, prints {"decision":"block","reason":"<the step and what
+to do>"} so the agent keeps going. Otherwise (no run, finished, waiting on a
+person or the system, already continuing without progress, deleted
+workspace, offline, not logged in, any error, over ~2s) it prints nothing.
+It always exits 0 and is silent on stderr unless GEARS_HOOK_DEBUG=1.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if rbHook {
+			runStopHook()
+			return nil
+		}
 		c, err := ctx()
 		if err != nil {
 			return err
@@ -858,6 +871,7 @@ func init() {
 	runbookRunsCmd.Flags().StringVar(&rbBy, "by", "", "agent label that started the run")
 	runbookRunsCmd.Flags().BoolVar(&rbMine, "mine", false, "only runs this agent started")
 	runbookRunsCmd.Flags().StringVar(&rbOwner, "owner", "", "only runs this label owns (me: this agent)")
+	runbookNextCmd.Flags().BoolVar(&rbHook, "hook", false, "Claude Code Stop hook mode: block only when a run this label owns waits on the agent")
 	runbookRunsCmd.Flags().IntVar(&rbLimit, "limit", 0, "page size (default 50)")
 	runbookRunsCmd.Flags().StringVar(&rbCursor, "cursor", "", "next page, from the previous output")
 
