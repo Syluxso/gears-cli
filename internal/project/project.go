@@ -395,8 +395,9 @@ Log work as it happens: gears session new --kind done|decision|problem|next "...
 
 A run, not you, decides the next step. With the Gears MCP tools:
 
-1. Resume first: runbook_runs {mine: true, status: "running"}. Start only
-   when there is nothing to resume:
+1. Resume first: runbook_runs {owner: "me", status: "running"} (runs your
+   label owns: the ones you started, or took over with runbook_claim
+   {run}). Start only when there is nothing to resume:
    runbook_start {runbook: "ticket-development", cardKey: "<KEY>"}.
 2. runbook_next {run}: the current step, instructions and waitingOn.
 3. waitingOn agent: do the work, then
@@ -411,6 +412,16 @@ A run, not you, decides the next step. With the Gears MCP tools:
 
 Two human gates: designing the ticket happens before any run; the audit's
 approval step is inside the run and only a person passes it.
+
+Stop hook (optional: gears hooks install, or gears init --stop-hook): when
+Claude Code is about to stop, gears runbook next --hook keeps you going
+only while a running run your label OWNS waits on you (waitingOn agent);
+its message names the step. Do it and complete it with evidence, skip it
+with a reason, or stop by telling the user why. It lets you stop for a
+person's or the system's step, a finished run, errors or offline, and when
+you were already continued without progress. Claude Code allows 8 blocks
+in a row without a tool call. The user stops it with Esc, by telling you
+to stop, or with gears hooks uninstall.
 ` + agentsEnd + "\n"
 
 func ensureAgentsBlock(root string, res *InitResult) error {
@@ -419,8 +430,9 @@ func ensureAgentsBlock(root string, res *InitResult) error {
 	if err == nil && strings.Contains(string(existing), agentsStart) {
 		s := string(existing)
 		i, j := strings.Index(s, agentsStart), strings.Index(s, agentsEnd)
-		// GRS-89: an older block (no agent loop) is brought up to date in place.
-		if j > i && !strings.Contains(s[i:j], "runbook_next") {
+		// GRS-89 / GRS-93: an older block (no agent loop, no Stop hook) is
+		// brought up to date in place.
+		if j > i && !strings.Contains(s[i:j], "Stop hook") {
 			rest := strings.TrimPrefix(s[j+len(agentsEnd):], "\n")
 			if err := os.WriteFile(path, []byte(s[:i]+agentsBlock+rest), 0o644); err != nil {
 				return err
