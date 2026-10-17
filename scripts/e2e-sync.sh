@@ -434,6 +434,16 @@ curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application
 curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"decision":"approve"}' "$GEARS_API/api/v1/runs/$LR/steps/ok/decision" >/dev/null || fail "approve"
 ( cd "$WS" && "$G" runbook next "$LR" --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['finished'] and o['status']=='completed', o; print('ok: approved, run finished')"
 
+echo "== GRS-91: a run's owner; claim moves it"
+CR=$( cd "$WS" && "$G" -a e2e-other runbook start claimme --step w --step v --json | python -c "import json,sys; r=json.load(sys.stdin)['run']; assert r['ownerLabel']=='e2e-other', r; print(r['id'])" )
+( cd "$WS" && "$G" runbook runs --owner me --status running --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert '$CR' not in [r['id'] for r in o['runs']], o; print('ok: not mine before the claim')"
+( cd "$WS" && "$G" runbook claim "$CR" --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['claimed'] and o['from']=='e2e-other' and o['to']=='claude-code+local' and o['run']['ownerLabel']=='claude-code+local', o; print('ok: claimed')"
+( cd "$WS" && "$G" runbook claim "$CR" --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert not o['claimed'], o; print('ok: claiming my own run changes nothing')"
+( cd "$WS" && "$G" runbook runs --owner me --status running --json ) | python -c "import json,sys; o=json.load(sys.stdin); r=[x for x in o['runs'] if x['id']=='$CR']; assert len(r)==1 and r[0]['owner']=='claude-code+local' and r[0]['agent']=='e2e-other', o; print('ok: owner=me after the claim')"
+( cd "$WS" && "$G" -a e2e-other runbook runs --owner me --status running --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert '$CR' not in [r['id'] for r in o['runs']], o; print('ok: the starter no longer owns it')"
+( cd "$WS" && "$G" runbook history "$CR" --json ) | python -c "import json,sys; o=json.load(sys.stdin); c=[e for e in o['events'] if e['type']=='run.claimed']; assert len(c)==1 and c[0]['from']=='e2e-other' and c[0]['to']=='claude-code+local', o; print('ok: run.claimed on the timeline')"
+( cd "$C" && "$G" sync >/dev/null && "$G" runbook show "$CR" --json ) | python -c "import json,sys; r=json.load(sys.stdin)['run']; assert r['ownerLabel']=='claude-code+local', r; print('ok: clone pulled the owner')"
+
 echo "== GRS-80: soft delete the workspace; every cache refuses; restore brings it all back"
 WS_SLUG=$(grep '^slug:' "$WS/.gears/project.yaml" | awk '{print $2}' | tr -d '\r')
 if ( cd "$WS" && "$G" workspace delete --confirm wrong >"$WORK/del.out" 2>&1 ); then fail "delete with a wrong confirm accepted"; fi

@@ -38,6 +38,7 @@ var (
 	rbRunbook    string
 	rbLimit      int
 	rbCursor     string
+	rbOwner      string
 )
 
 var runbookRunsCmd = &cobra.Command{
@@ -49,7 +50,8 @@ var runbookRunsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		out, err := verbs.RunbookRuns(c, verbs.RunbookRunsIn{Status: rbStatus, Runbook: rbRunbook, Card: rbTarget, By: rbBy, Mine: rbMine, Limit: rbLimit, Cursor: rbCursor})
+		out, err := verbs.RunbookRuns(c, verbs.RunbookRunsIn{Status: rbStatus, Runbook: rbRunbook, Card: rbTarget, By: rbBy, Mine: rbMine, Owner: rbOwner,
+			Limit: rbLimit, Cursor: rbCursor})
 		if err != nil {
 			return err
 		}
@@ -67,7 +69,11 @@ var runbookRunsCmd = &cobra.Command{
 			if r.CurrentStep != nil {
 				cur = fmt.Sprintf("%d %s", r.CurrentStep.Position, r.CurrentStep.ID)
 			}
-			fmt.Printf("%s  %-24s %-10s %-5s %-8s %-16s %s\n", r.ID, r.Runbook, r.Status, r.Progress, r.Card, r.Agent, cur)
+			owner := r.Owner
+			if owner != r.Agent {
+				owner = r.Agent + ">" + owner // claimed: starter>owner
+			}
+			fmt.Printf("%s  %-24s %-10s %-5s %-8s %-16s %s\n", r.ID, r.Runbook, r.Status, r.Progress, r.Card, owner, cur)
 		}
 		if out.Next != "" {
 			fmt.Println("more: --cursor " + out.Next)
@@ -429,6 +435,37 @@ a cached one. A finished run is refused.`,
 	},
 }
 
+var runbookClaimCmd = &cobra.Command{
+	Use:   "claim <run>",
+	Short: "Take over a running run: this agent label becomes its owner (GRS-91)",
+	Long: `Makes the label you act as (-a, $GEARS_AGENT, the workspace's agent name)
+the owner of a running run on gears-api. The owner is the session kept
+working on the run: the Stop hook (gears runbook next --hook) and the
+default run of runbook next, complete and skip. Any member of the workspace
+may claim; the move is on the run's timeline as run.claimed (from, to).
+<run> is the run id or a prefix of a cached one.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := ctx()
+		if err != nil {
+			return err
+		}
+		out, err := verbs.RunbookClaim(c, verbs.RunbookClaimIn{Run: args[0]})
+		if err != nil {
+			return err
+		}
+		if emit(out) {
+			return nil
+		}
+		if !out.Claimed {
+			fmt.Printf("%s already owns %s\n", out.To, out.Run.ID)
+			return nil
+		}
+		fmt.Printf("claimed %s: owner %s (was %s)\n", out.Run.ID, out.To, out.From)
+		return nil
+	},
+}
+
 var runbookNextCmd = &cobra.Command{
 	Use:   "next [run]",
 	Short: "What to do now on a run: the current step, who it waits on, instructions (GRS-87)",
@@ -525,6 +562,9 @@ func historyLine(e api.RunEvent) string {
 	}
 	for _, ev := range e.Evidence {
 		line += "  [" + ev.Kind + " " + ev.Ref + "]"
+	}
+	if e.Type == "run.claimed" {
+		line += "  " + e.From + " -> " + e.To
 	}
 	if e.Reason != "" {
 		line += "  (" + e.Reason + ")"
@@ -817,11 +857,12 @@ func init() {
 	runbookRunsCmd.Flags().StringVar(&rbTarget, "card", "", "card key")
 	runbookRunsCmd.Flags().StringVar(&rbBy, "by", "", "agent label that started the run")
 	runbookRunsCmd.Flags().BoolVar(&rbMine, "mine", false, "only runs this agent started")
+	runbookRunsCmd.Flags().StringVar(&rbOwner, "owner", "", "only runs this label owns (me: this agent)")
 	runbookRunsCmd.Flags().IntVar(&rbLimit, "limit", 0, "page size (default 50)")
 	runbookRunsCmd.Flags().StringVar(&rbCursor, "cursor", "", "next page, from the previous output")
 
 	runbookStepCmd.AddCommand(runbookStepAddCmd, runbookStepUpdateCmd, runbookStepRemoveCmd, runbookStepMoveCmd)
 	runbookCmd.AddCommand(runbookNewCmd, runbookCopyCmd, runbookUpdateCmd, runbookDeleteCmd, runbookListCmd, runbookShowCmd, runbookStartCmd,
-		runbookStepCmd, runbookCompleteCmd, runbookSkipCmd, runbookStopCmd, runbookNextCmd, runbookHistoryCmd, runbookStatusCmd, runbookRunsCmd)
+		runbookStepCmd, runbookCompleteCmd, runbookSkipCmd, runbookStopCmd, runbookClaimCmd, runbookNextCmd, runbookHistoryCmd, runbookStatusCmd, runbookRunsCmd)
 	root.AddCommand(runbookCmd)
 }

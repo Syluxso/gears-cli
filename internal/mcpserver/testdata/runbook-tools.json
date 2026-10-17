@@ -3,11 +3,12 @@
   "tools": {
     "runbook_abilities": {"required": [], "args": []},
     "runbook_adopt": {"required": ["ref"], "args": ["as", "ref"]},
+    "runbook_claim": {"required": ["run"], "args": ["run"]},
     "runbook_edit": {"required": ["runbook"], "args": ["description", "runbook", "steps", "title"]},
     "runbook_history": {"required": ["run"], "args": ["run"]},
     "runbook_list": {"required": [], "args": []},
     "runbook_next": {"required": [], "args": ["run"]},
-    "runbook_runs": {"required": [], "args": ["by", "card", "cursor", "limit", "mine", "runbook", "status"]},
+    "runbook_runs": {"required": [], "args": ["by", "card", "cursor", "limit", "mine", "owner", "runbook", "status"]},
     "runbook_show": {"required": ["runbook"], "args": ["runbook"]},
     "runbook_start": {"required": ["runbook"], "args": ["cardKey", "idempotencyKey", "runbook", "steps"]},
     "runbook_status": {"required": [], "args": ["card", "refresh", "run", "status"]},

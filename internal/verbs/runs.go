@@ -95,7 +95,8 @@ type RunPick struct {
 }
 
 // pickRun resolves the run: a full id as given, a cached prefix, else the
-// one running run this agent started (asked of gears-api).
+// one running run this agent owns (asked of gears-api; GRS-91: the starter
+// until a claim moves it).
 func (c Ctx) pickRun(cl *api.Client, key, agent string) (string, error) {
 	key = strings.TrimSpace(key)
 	if strings.HasPrefix(key, "run-") && len(key) == len("run-")+36 {
@@ -114,13 +115,13 @@ func (c Ctx) pickRun(cl *api.Client, key, agent string) (string, error) {
 	}
 	ctx, cancel := runCtx()
 	defer cancel()
-	list, err := cl.ListRuns(ctx, ws, "running", "")
+	list, _, err := cl.ListRunsPage(ctx, ws, api.RunsFilter{Status: "running", Owner: agent, Limit: 20})
 	if err != nil {
 		return "", err
 	}
 	var mine []string
 	for _, r := range list {
-		if r.AgentLabel == agent {
+		if runOwner(r) == agent {
 			mine = append(mine, r.ID)
 		}
 	}
@@ -128,7 +129,7 @@ func (c Ctx) pickRun(cl *api.Client, key, agent string) (string, error) {
 	case 1:
 		return mine[0], nil
 	case 0:
-		return "", fmt.Errorf("%s has no running run; pass run", agent)
+		return "", fmt.Errorf("%s owns no running run; pass run (or runbook_claim one)", agent)
 	}
 	return "", fmt.Errorf("%s has %d running runs (%s); pass run", agent, len(mine), strings.Join(mine, ", "))
 }
@@ -380,6 +381,7 @@ type RunbookRunsIn struct {
 	Card    string `json:"card,omitempty" jsonschema:"Card key, e.g. GRS-55."`
 	By      string `json:"by,omitempty" jsonschema:"Only runs started by this agent label."`
 	Mine    bool   `json:"mine,omitempty" jsonschema:"Only runs started by the label you act as."`
+	Owner   string `json:"owner,omitempty" jsonschema:"Only runs owned by this agent label; me for the label you act as (GRS-91: the starter until runbook_claim moves it)."`
 	Limit   int    `json:"limit,omitempty" jsonschema:"Page size, 1-200 (default 50)."`
 	Cursor  string `json:"cursor,omitempty" jsonschema:"next from the previous page."`
 	AgentOpt
@@ -406,6 +408,7 @@ type RunsItem struct {
 	Total       int        `json:"total"`
 	Progress    string     `json:"progress"`
 	Agent       string     `json:"agent"`
+	Owner       string     `json:"owner"` // GRS-91: the label that owns it
 	Card        string     `json:"card,omitempty"`
 	StartedAt   time.Time  `json:"startedAt"`
 	FinishedAt  *time.Time `json:"finishedAt,omitempty"`
@@ -421,7 +424,7 @@ type RunbookRunsOut struct {
 
 func runsItem(r api.Run) RunsItem {
 	out := RunsItem{ID: r.ID, Runbook: r.Runbook, RunbookRef: r.RunbookRef, Status: r.Status, Total: len(r.Steps), Agent: r.AgentLabel,
-		Card: r.CardKey, StartedAt: r.StartedAt, FinishedAt: r.FinishedAt, UpdatedAt: r.UpdatedAt}
+		Owner: runOwner(r), Card: r.CardKey, StartedAt: r.StartedAt, FinishedAt: r.FinishedAt, UpdatedAt: r.UpdatedAt}
 	for _, s := range r.Steps {
 		if s.Status == "completed" || s.Status == "skipped" {
 			out.Done++
@@ -442,7 +445,11 @@ func RunbookRuns(c Ctx, in RunbookRunsIn) (*RunbookRunsOut, error) {
 	if in.Mine {
 		by = c.agentOr(in.Agent)
 	}
-	f := api.RunsFilter{Status: in.Status, Card: in.Card, Runbook: in.Runbook, Agent: by, Limit: in.Limit, Cursor: in.Cursor}
+	owner := strings.TrimSpace(in.Owner)
+	if strings.EqualFold(owner, "me") {
+		owner = c.agentOr(in.Agent)
+	}
+	f := api.RunsFilter{Status: in.Status, Card: in.Card, Runbook: in.Runbook, Agent: by, Owner: owner, Limit: in.Limit, Cursor: in.Cursor}
 	var apiErr error
 	if ws, err := c.runsWorkspace(); err != nil {
 		apiErr = err
@@ -466,7 +473,7 @@ func RunbookRuns(c Ctx, in RunbookRunsIn) (*RunbookRunsOut, error) {
 		}
 		apiErr = err
 	}
-	list, err := runs.List(c.Project, runs.Filter{Status: in.Status, Card: in.Card, Agent: by, Runbook: in.Runbook})
+	list, err := runs.List(c.Project, runs.Filter{Status: in.Status, Card: in.Card, Agent: by, Owner: owner, Runbook: in.Runbook})
 	if err != nil {
 		return nil, err
 	}
@@ -489,7 +496,7 @@ func RunbookRuns(c Ctx, in RunbookRunsIn) (*RunbookRunsOut, error) {
 // RunbookNextIn names the run (GRS-87); the same arguments as the remote
 // MCP's runbook_next.
 type RunbookNextIn struct {
-	Run string `json:"run,omitempty" jsonschema:"Run id (run-<uuid>, or a prefix of a cached one). Omit for your one running run; with several they are listed to pick from."`
+	Run string `json:"run,omitempty" jsonschema:"Run id (run-<uuid>, or a prefix of a cached one). Omit for the one running run you own; with several they are listed to pick from."`
 	AgentOpt
 }
 
@@ -502,8 +509,8 @@ type RunbookNextOut struct {
 }
 
 // RunbookNext asks gears-api what the agent does now on a run (it needs no
-// orchestrator). With no run: the one running run this agent started; with
-// several, they are listed to pick from. gears-api offline: the cached run
+// orchestrator). With no run: the one running run this agent owns (GRS-91);
+// with several, they are listed to pick from. gears-api offline: the cached run
 // with stale: true.
 func RunbookNext(c Ctx, in RunbookNextIn) (*RunbookNextOut, error) {
 	agent := c.agentOr(in.Agent)
@@ -517,14 +524,14 @@ func RunbookNext(c Ctx, in RunbookNextIn) (*RunbookNextOut, error) {
 				return nil, err
 			}
 			ctx, cancel := runCtx()
-			list, _, err := cl.ListRunsPage(ctx, ws, api.RunsFilter{Status: "running", Agent: agent, Limit: 20})
+			list, _, err := cl.ListRunsPage(ctx, ws, api.RunsFilter{Status: "running", Owner: agent, Limit: 20})
 			cancel()
 			if err != nil {
 				return nil, err
 			}
 			switch len(list) {
 			case 0:
-				return nil, fmt.Errorf("%s has no running run; start one with runbook_start or pass run", agent)
+				return nil, fmt.Errorf("%s owns no running run; start one with runbook_start, claim one with runbook_claim, or pass run", agent)
 			case 1:
 				key = list[0].ID
 			default:
@@ -566,8 +573,8 @@ func RunbookNext(c Ctx, in RunbookNextIn) (*RunbookNextOut, error) {
 // cachedNext is runbook_next from a cached run (no ability detail).
 func cachedNext(r *api.Run, apiErr error) *RunbookNextOut {
 	it := runsItem(*r)
-	out := &RunbookNextOut{RunNext: api.RunNext{RunID: r.ID, Runbook: r.Runbook, Status: r.Status, Card: r.CardKey, Done: it.Done, Total: it.Total,
-		Progress: it.Progress}, Stale: true, Note: "gears-api did not answer (" + apiErr.Error() + "); this is the local cache"}
+	out := &RunbookNextOut{RunNext: api.RunNext{RunID: r.ID, Runbook: r.Runbook, Status: r.Status, Card: r.CardKey, Owner: it.Owner, Version: r.Version,
+		Done: it.Done, Total: it.Total, Progress: it.Progress}, Stale: true, Note: "gears-api did not answer (" + apiErr.Error() + "); this is the local cache"}
 	if r.Status != "running" {
 		out.Finished = true
 		out.Message = fmt.Sprintf("Run %s is %s: nothing more to do on it.", r.ID, r.Status)
@@ -598,4 +605,48 @@ func cachedNext(r *api.Run, apiErr error) *RunbookNextOut {
 		}
 	}
 	return out
+}
+
+// runOwner is a run's owner label: the starter for a run from before
+// owners (GRS-91).
+func runOwner(r api.Run) string {
+	if r.OwnerLabel != "" {
+		return r.OwnerLabel
+	}
+	return r.AgentLabel
+}
+
+// ----------------------------------------------------------- runbook_claim
+
+// RunbookClaimIn names the run to take over (GRS-91); the same arguments as
+// the remote MCP's runbook_claim.
+type RunbookClaimIn struct {
+	Run string `json:"run" jsonschema:"Run id (run-<uuid>, or a prefix of a cached one), from runbook_runs. You (the label you act as) become its owner."`
+	AgentOpt
+}
+
+// RunbookClaim makes the acting label the run's owner on gears-api (any
+// workspace member may; recorded as run.claimed {from, to}) and caches the
+// run.
+func RunbookClaim(c Ctx, in RunbookClaimIn) (*api.ClaimOut, error) {
+	if strings.TrimSpace(in.Run) == "" {
+		return nil, errors.New("run required: its id (run-<uuid>) or a cached prefix")
+	}
+	cl, err := runsClient()
+	if err != nil {
+		return nil, err
+	}
+	agent := c.agentOr(in.Agent)
+	id, err := c.pickRun(cl, in.Run, agent)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := runCtx()
+	defer cancel()
+	out, err := cl.ClaimRun(ctx, id, api.ClaimIn{Agent: agent})
+	if err != nil {
+		return nil, err
+	}
+	c.cacheRun(out.Run)
+	return out, nil
 }
