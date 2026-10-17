@@ -270,15 +270,15 @@ type NextAbility struct {
 
 // NextStep is the run's current step as runbook_next shows it.
 type NextStep struct {
-	ID       string         `json:"id"`
-	Kind     string         `json:"kind"`
-	Title    string         `json:"title"`
-	Params   map[string]any `json:"params,omitempty"`
+	ID          string         `json:"id"`
+	Kind        string         `json:"kind"`
+	Title       string         `json:"title"`
+	Params      map[string]any `json:"params,omitempty"`
 	Executor    string         `json:"executor"`
 	Position    int            `json:"position"`
 	Ability     NextAbility    `json:"ability"`
 	SystemError string         `json:"systemError,omitempty"`
-	Decision *RunDecision   `json:"decision,omitempty"`
+	Decision    *RunDecision   `json:"decision,omitempty"`
 }
 
 // RunNext is GET /runs/:id/next: what the agent does now.
