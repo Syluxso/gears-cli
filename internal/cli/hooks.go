@@ -34,9 +34,11 @@ hooks uninstall.
 
 The hook is written into <dir>/.claude/settings.json (default dir: the
 workspace root), merged: other settings and other Stop hooks are kept.
-With -a <label> the command carries that label; otherwise the hook acts as
-the label every command resolves ($GEARS_AGENT, the workspace's agent
-name, the login label).`
+With -a <label> the command carries that label; else, when the gears MCP
+server in <dir>/.mcp.json sets GEARS_AGENT, it carries that one (Claude Code
+gives that env to the MCP server only, not to hooks); otherwise the hook acts
+as the label every command resolves ($GEARS_AGENT, the workspace's agent
+name, the login label). Run install again after changing the label.`
 
 func hooksTarget() (string, error) {
 	if d := strings.TrimSpace(hooksDir); d != "" {
@@ -80,7 +82,7 @@ var hooksInstallCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		st, err := hooks.Install(dir, hooks.Command(globalAgent))
+		st, err := hooks.Install(dir, hooks.Command(hooks.Agent(globalAgent, dir)))
 		if err != nil {
 			return err
 		}

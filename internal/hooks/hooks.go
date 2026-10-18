@@ -34,6 +34,51 @@ func Command(agent string) string {
 	return "gears " + Marker
 }
 
+// MCPAgent is GEARS_AGENT from the env of the gears MCP server (command
+// gears, args starting with run) in <dir>/.mcp.json, or "" (GRS-95). Claude
+// Code gives that env to the MCP server only, never to a hook command, so
+// a hook without it would act as a different label than the agent's tools.
+func MCPAgent(dir string) string {
+	raw, err := os.ReadFile(filepath.Join(dir, ".mcp.json"))
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		MCPServers map[string]struct {
+			Command string            `json:"command"`
+			Args    []string          `json:"args"`
+			Env     map[string]string `json:"env"`
+		} `json:"mcpServers"`
+	}
+	if json.Unmarshal(bytes.TrimPrefix(raw, []byte("\xef\xbb\xbf")), &cfg) != nil {
+		return ""
+	}
+	var found []string
+	for _, s := range cfg.MCPServers {
+		base := strings.TrimSuffix(strings.ToLower(filepath.Base(s.Command)), ".exe")
+		if base != "gears" || len(s.Args) == 0 || s.Args[0] != "run" {
+			continue
+		}
+		if a := strings.TrimSpace(s.Env["GEARS_AGENT"]); a != "" {
+			found = append(found, a)
+		}
+	}
+	if len(found) != 1 { // none, or several gears servers: no single answer
+		return ""
+	}
+	return found[0]
+}
+
+// Agent is the label the hook command carries: the -a flag, else the gears
+// MCP server's GEARS_AGENT in <dir>/.mcp.json, else "" (the label the hook
+// resolves when it runs).
+func Agent(flag, dir string) string {
+	if a := strings.TrimSpace(flag); a != "" {
+		return a
+	}
+	return MCPAgent(dir)
+}
+
 // Path is the settings file the hook lives in.
 func Path(dir string) string { return filepath.Join(dir, ".claude", "settings.json") }
 

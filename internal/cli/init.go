@@ -130,7 +130,7 @@ Workspace rules:
 			printScan(out)
 		}
 		if initHook {
-			st, err := hooks.Install(p.Root, hooks.Command(globalAgent))
+			st, err := hooks.Install(p.Root, hooks.Command(hooks.Agent(globalAgent, p.Root)))
 			if err != nil {
 				return err
 			}

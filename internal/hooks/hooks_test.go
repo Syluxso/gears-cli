@@ -169,3 +169,62 @@ func TestBadSettingsLeftAlone(t *testing.T) {
 		}
 	}
 }
+
+// GRS-95: the hook carries the gears MCP server's label from .mcp.json, so
+// it acts as the same label as the agent's tools.
+func TestAgentFromMCPJSON(t *testing.T) {
+	dir := t.TempDir()
+	if got := Agent("", dir); got != "" {
+		t.Fatalf("no .mcp.json: %q", got)
+	}
+	write := func(s string) {
+		if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"mcpServers":{
+	  "gears":{"command":"gears","args":["run","--dir","C:\\w"],"env":{"GEARS_AGENT":"claude-local","GEARS_SYNC_INTERVAL":"5"}},
+	  "other":{"command":"node","args":["x.js"],"env":{"GEARS_AGENT":"nope"}}}}`)
+	if got := Agent("", dir); got != "claude-local" {
+		t.Fatalf("from .mcp.json: %q", got)
+	}
+	if got := Agent("grok", dir); got != "grok" {
+		t.Fatalf("flag wins: %q", got)
+	}
+	write(`{"mcpServers":{"g":{"command":"C:\\bin\\gears.exe","args":["run"],"env":{"GEARS_AGENT":"win"}}}}`)
+	if got := MCPAgent(dir); got != "win" {
+		t.Fatalf("gears.exe path: %q", got)
+	}
+	write(`{"mcpServers":{"a":{"command":"gears","args":["run"],"env":{"GEARS_AGENT":"x"}},"b":{"command":"gears","args":["run"],"env":{"GEARS_AGENT":"y"}}}}`)
+	if got := MCPAgent(dir); got != "" {
+		t.Fatalf("two gears servers: %q", got)
+	}
+	write(`{"mcpServers":{"g":{"command":"gears","args":["status"],"env":{"GEARS_AGENT":"x"}}}}`)
+	if got := MCPAgent(dir); got != "" {
+		t.Fatalf("not gears run: %q", got)
+	}
+	write(`not json`)
+	if got := MCPAgent(dir); got != "" {
+		t.Fatalf("bad json: %q", got)
+	}
+}
+
+// GRS-95: an older label-less hook is brought up to date in place.
+func TestInstallUpdatesLabellessHook(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Install(dir, Command("")); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Install(dir, Command("claude-local"))
+	if err != nil || !st.Changed {
+		t.Fatalf("update: %+v %v", st, err)
+	}
+	got := readFile(t, dir)
+	if !strings.Contains(got, `"gears -a claude-local runbook next --hook"`) || strings.Count(got, Marker) != 1 {
+		t.Fatalf("updated file:\n%s", got)
+	}
+	var v map[string]any
+	if err := json.Unmarshal([]byte(got), &v); err != nil {
+		t.Fatal(err)
+	}
+}
