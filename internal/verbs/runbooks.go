@@ -15,7 +15,7 @@ import (
 // editable copy is the workspace's own and runbook_edit changes it.
 
 type RunbookAdoptIn struct {
-	Ref string `json:"ref" jsonschema:"The official runbook to adopt (runbook_list official[].ref), e.g. single-ticket-development."`
+	Ref string `json:"ref" jsonschema:"The official runbook to adopt (runbook_list official[].ref), e.g. ticket-development."`
 	As  string `json:"as,omitempty" jsonschema:"Name for the copy (its slug is derived). Default: the ref for a frozen runbook, <ref>-copy for an editable one."`
 }
 

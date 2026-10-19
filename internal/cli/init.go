@@ -12,6 +12,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/Syluxso/gears-cli/internal/artifact"
+	"github.com/Syluxso/gears-cli/internal/hooks"
 	"github.com/Syluxso/gears-cli/internal/project"
 	"github.com/Syluxso/gears-cli/internal/session"
 	"github.com/Syluxso/gears-cli/internal/verbs"
@@ -22,6 +23,7 @@ var (
 	initPrefix  string
 	initOffline bool
 	initName    string
+	initHook    bool
 )
 
 // stdinIsTerminal reports whether init may ask for the agent name. Tests
@@ -58,6 +60,11 @@ the architecture doc included, are left alone.
 At a workspace root (a directory with projects/), init also scans
 projects/*/ for git repos and records them in .gears/projects.yaml, the same
 as gears projects scan.
+
+--stop-hook (opt-in, GRS-93) also writes the Claude Code Stop hook into
+.claude/settings.json (merged with what is there), the same as gears hooks
+install: it keeps an agent going only while a run its label owns waits on
+the agent. See gears hooks --help.
 
 Workspace rules:
   - One .gears per workspace, at its root. Run init in a directory with no
@@ -121,6 +128,18 @@ Workspace rules:
 			}
 			fmt.Printf("  scanned %s/: %d project%s in .gears/%s\n", project.ProjectsDir, len(out.Projects), plural(len(out.Projects), "", "s"), project.ManifestFile)
 			printScan(out)
+		}
+		if initHook {
+			st, err := hooks.Install(p.Root, hooks.Command(hooks.Agent(globalAgent, p.Root)))
+			if err != nil {
+				return err
+			}
+			rel := filepath.ToSlash(mustRel(dir, st.Path))
+			if st.Changed {
+				fmt.Printf("  wrote   %s (Stop hook: %s)\n", rel, st.Command)
+			} else {
+				fmt.Printf("  kept    %s (Stop hook present)\n", rel)
+			}
 		}
 		fmt.Printf("\nBound %s to %q.\nAgent name: %s (saved in %s; used here when neither -a nor GEARS_AGENT is set).\nNext: gears status\n", dir, p.Slug, name, agentRel)
 		return nil
@@ -212,5 +231,6 @@ func init() {
 	initCmd.Flags().StringVar(&initPrefix, "prefix", "", "card key prefix, e.g. GRS (default: from the slug)")
 	initCmd.Flags().StringVar(&initName, "name", "", "the agent's name in this workspace: the label desk items, session entries and card activity carry (asked for when not given)")
 	initCmd.Flags().BoolVar(&initOffline, "offline", false, "scan without asking gears-api for known remotes")
+	initCmd.Flags().BoolVar(&initHook, "stop-hook", false, "also write the Claude Code Stop hook into .claude/settings.json (keeps the agent on runs its label owns; see gears hooks)")
 	root.AddCommand(initCmd)
 }

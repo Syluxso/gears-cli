@@ -27,6 +27,7 @@ var (
 	reRunStop = regexp.MustCompile(`^/api/v1/runs/([^/]+)/cancel$`)
 	reRunEvts = regexp.MustCompile(`^/api/v1/runs/([^/]+)/events$`)
 	reRunNext = regexp.MustCompile(`^/api/v1/runs/([^/]+)/next$`)
+	reRunClm  = regexp.MustCompile(`^/api/v1/runs/([^/]+)/claim$`)
 )
 
 // RunBodies are the request bodies of every run write, in order.
@@ -54,8 +55,15 @@ func (s *Server) getRun(id string) *api.Run {
 func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 	path := r.URL.Path
 	if !reWsRuns.MatchString(path) && !reRun.MatchString(path) && !reRunStep.MatchString(path) && !reRunStop.MatchString(path) && !reRunEvts.MatchString(path) &&
-		!reRunNext.MatchString(path) {
+		!reRunNext.MatchString(path) && !reRunClm.MatchString(path) {
 		return false
+	}
+	if s.RunsDelay > 0 {
+		select {
+		case <-time.After(s.RunsDelay):
+		case <-r.Context().Done():
+			return true
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -86,7 +94,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 			steps = []api.StepDef{{ID: "a"}, {ID: "b"}}
 		}
 		run := &api.Run{ID: "run-" + uuid.NewString(), WorkspaceID: ws, Runbook: in.Runbook, Status: "running", CardKey: in.CardKey,
-			AgentLabel: in.Agent, StartedBy: "u-tester", Version: 1, StartedAt: now, UpdatedAt: now}
+			AgentLabel: in.Agent, OwnerLabel: in.Agent, StartedBy: "u-tester", Version: 1, StartedAt: now, UpdatedAt: now}
 		for i, d := range steps {
 			kind := d.Kind
 			if kind == "" {
@@ -117,6 +125,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 		for id := range s.rows["runs"] {
 			run := s.getRun(id)
 			if run == nil || (status != "" && run.Status != status) || (q.Get("agent") != "" && run.AgentLabel != q.Get("agent")) ||
+				(q.Get("owner") != "" && run.OwnerLabel != q.Get("owner")) ||
 				(q.Get("card") != "" && !strings.EqualFold(run.CardKey, q.Get("card"))) ||
 				(q.Get("runbook") != "" && run.Runbook != q.Get("runbook") && run.RunbookRef != q.Get("runbook")) {
 				continue
@@ -155,7 +164,8 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 			problem(w, 404, "gears.not_found", "not found")
 			return true
 		}
-		out := api.RunNext{RunID: run.ID, Runbook: run.Runbook, Status: run.Status, Card: run.CardKey, Total: len(run.Steps)}
+		out := api.RunNext{RunID: run.ID, Runbook: run.Runbook, Status: run.Status, Card: run.CardKey, Total: len(run.Steps), Owner: run.OwnerLabel,
+			Version: run.Version}
 		for _, st := range run.Steps {
 			if st.Status == "completed" || st.Status == "skipped" {
 				out.Done++
@@ -185,6 +195,29 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 				out.Next = append(out.Next, st.Title)
 			}
 		}
+		ok(http.StatusOK, out)
+	case reRunClm.MatchString(path): // GRS-91
+		run := s.getRun(reRunClm.FindStringSubmatch(path)[1])
+		if run == nil {
+			problem(w, 404, "gears.not_found", "not found")
+			return true
+		}
+		var in api.ClaimIn
+		b, _ := json.Marshal(body)
+		_ = json.Unmarshal(b, &in)
+		if run.Status != "running" {
+			problem(w, 409, "run.finished", "run is "+run.Status)
+			return true
+		}
+		out := api.ClaimOut{From: run.OwnerLabel, To: in.Agent}
+		if run.OwnerLabel != in.Agent {
+			out.Claimed = true
+			run.OwnerLabel = in.Agent
+			addEvent(run, "run.claimed", "", in.Agent, now)
+			run.Events[len(run.Events)-1].From, run.Events[len(run.Events)-1].To = out.From, out.To
+			s.saveRun(run, in.Agent)
+		}
+		out.Run = run
 		ok(http.StatusOK, out)
 	case reRunEvts.MatchString(path): // GRS-72
 		run := s.getRun(reRunEvts.FindStringSubmatch(path)[1])

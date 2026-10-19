@@ -16,7 +16,8 @@ func TestAgentsBlockAgentLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
-	for _, want := range []string{"runbook_next", "runbook_step_complete", "runbook_runs {mine: true", "waitingOn human", "Two human gates"} {
+	for _, want := range []string{"runbook_next", "runbook_step_complete", "runbook_runs {owner: \"me\"", "runbook_claim", "waitingOn human", "Two human gates",
+		"Stop hook", "gears hooks install", "8 blocks", "Esc", "OWNS"} {
 		if !strings.Contains(string(b), want) {
 			t.Fatalf("block lacks %q:\n%s", want, b)
 		}

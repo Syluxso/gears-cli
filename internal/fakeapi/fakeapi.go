@@ -56,6 +56,9 @@ type Server struct {
 	// the official catalog, abilities, start, complete and skip are 501;
 	// record reads (runs, adopted copies) still answer.
 	RunbooksOff bool
+	// RunsDelay holds every runs request this long (GRS-92: the Stop
+	// hook's timeout).
+	RunsDelay time.Duration
 	// IgnoreTables answers a filtered pull as an API from before GRS-51:
 	// everything, no tables echo.
 	IgnoreTables bool

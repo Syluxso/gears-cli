@@ -58,24 +58,35 @@ func SaveDB(db *sql.DB, r api.Run) (bool, error) {
 	defer tx.Rollback()
 	var have int
 	err = tx.QueryRow(`SELECT version FROM record_runs WHERE id = ?`, r.ID).Scan(&have)
+	owner := r.OwnerLabel
+	if owner == "" {
+		owner = r.AgentLabel
+	}
 	if err == nil && have >= r.Version {
+		// GRS-91: a claim moves the owner without a new version.
+		if have == r.Version && r.OwnerLabel != "" {
+			if _, err := tx.Exec(`UPDATE record_runs SET owner_label = ? WHERE id = ? AND owner_label <> ?`, r.OwnerLabel, r.ID, r.OwnerLabel); err != nil {
+				return false, err
+			}
+			return false, tx.Commit()
+		}
 		return false, nil
 	}
 	if err != nil && err != sql.ErrNoRows {
 		return false, err
 	}
 	if _, err := tx.Exec(`INSERT INTO record_runs (id, workspace_id, runbook, status, current_step, card_key, agent_label, started_by, version, started_at, finished_at, updated_at,
-			runbook_ref, runbook_version, internal, started_via, cancel_reason, canceled_by, canceled_label, canceled_via, canceled_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			runbook_ref, runbook_version, internal, started_via, cancel_reason, canceled_by, canceled_label, canceled_via, canceled_at, owner_label)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET workspace_id = excluded.workspace_id, runbook = excluded.runbook, status = excluded.status,
 			current_step = excluded.current_step, card_key = excluded.card_key, agent_label = excluded.agent_label, started_by = excluded.started_by,
 			version = excluded.version, started_at = excluded.started_at, finished_at = excluded.finished_at, updated_at = excluded.updated_at,
 			runbook_ref = excluded.runbook_ref, runbook_version = excluded.runbook_version, internal = excluded.internal, started_via = excluded.started_via,
 			cancel_reason = excluded.cancel_reason, canceled_by = excluded.canceled_by, canceled_label = excluded.canceled_label,
-			canceled_via = excluded.canceled_via, canceled_at = excluded.canceled_at`,
+			canceled_via = excluded.canceled_via, canceled_at = excluded.canceled_at, owner_label = excluded.owner_label`,
 		r.ID, r.WorkspaceID, r.Runbook, r.Status, r.CurrentStep, r.CardKey, r.AgentLabel, r.StartedBy, r.Version,
 		ts(r.StartedAt), tsp(r.FinishedAt), ts(r.UpdatedAt), r.RunbookRef, r.RunbookVer, r.Internal, r.StartedVia,
-		r.CancelReason, r.CanceledBy, r.CanceledLabel, r.CanceledVia, tsp(r.CanceledAt)); err != nil {
+		r.CancelReason, r.CanceledBy, r.CanceledLabel, r.CanceledVia, tsp(r.CanceledAt), owner); err != nil {
 		return false, err
 	}
 	if _, err := tx.Exec(`DELETE FROM record_run_steps WHERE run_id = ?`, r.ID); err != nil {
@@ -91,9 +102,9 @@ func SaveDB(db *sql.DB, r api.Run) (bool, error) {
 		if pos == 0 {
 			pos = i + 1
 		}
-		if _, err := tx.Exec(`INSERT INTO record_run_steps (run_id, step_id, position, kind, title, status, evidence, note, skip_reason, done_by, done_label, started_at, finished_at, done_via)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			r.ID, s.StepID, pos, s.Kind, s.Title, s.Status, string(b), s.Note, s.SkipReason, s.DoneBy, s.DoneLabel, tsp(s.StartedAt), tsp(s.FinishedAt), s.DoneVia); err != nil {
+		if _, err := tx.Exec(`INSERT INTO record_run_steps (run_id, step_id, position, kind, title, status, evidence, note, skip_reason, done_by, done_label, started_at, finished_at, done_via, executor)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, s.StepID, pos, s.Kind, s.Title, s.Status, string(b), s.Note, s.SkipReason, s.DoneBy, s.DoneLabel, tsp(s.StartedAt), tsp(s.FinishedAt), s.DoneVia, s.Executor); err != nil {
 			return false, err
 		}
 	}
@@ -119,9 +130,9 @@ func SaveEventsDB(db *sql.DB, runID string, evs []api.RunEvent) error {
 			ev = []api.Evidence{}
 		}
 		b, _ := json.Marshal(ev)
-		if _, err := tx.Exec(`INSERT INTO record_run_events (run_id, version, type, step_id, at, actor, label, via, evidence, reason, note)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id, version, type) DO NOTHING`,
-			runID, e.Version, e.Type, e.StepID, ts(e.At), e.Actor, e.Label, e.Via, string(b), e.Reason, e.Note); err != nil {
+		if _, err := tx.Exec(`INSERT INTO record_run_events (run_id, version, type, step_id, at, actor, label, via, evidence, reason, note, from_label, to_label)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id, version, type) DO NOTHING`,
+			runID, e.Version, e.Type, e.StepID, ts(e.At), e.Actor, e.Label, e.Via, string(b), e.Reason, e.Note, e.From, e.To); err != nil {
 			return err
 		}
 	}
@@ -145,7 +156,7 @@ func Events(p *project.Project, runID string) ([]api.RunEvent, error) {
 		return nil, err
 	}
 	defer db.Close()
-	rows, err := db.Query(`SELECT run_id, version, type, step_id, at, actor, label, via, evidence, reason, note FROM record_run_events WHERE run_id = ?
+	rows, err := db.Query(`SELECT run_id, version, type, step_id, at, actor, label, via, evidence, reason, note, from_label, to_label FROM record_run_events WHERE run_id = ?
 		ORDER BY version, CASE WHEN type = 'run.started' THEN 0 WHEN type LIKE 'step.%' THEN 1 ELSE 2 END, rowid`, runID)
 	if err != nil {
 		return nil, err
@@ -155,7 +166,7 @@ func Events(p *project.Project, runID string) ([]api.RunEvent, error) {
 	for rows.Next() {
 		var e api.RunEvent
 		var at, ev string
-		if err := rows.Scan(&e.RunID, &e.Version, &e.Type, &e.StepID, &at, &e.Actor, &e.Label, &e.Via, &ev, &e.Reason, &e.Note); err != nil {
+		if err := rows.Scan(&e.RunID, &e.Version, &e.Type, &e.StepID, &at, &e.Actor, &e.Label, &e.Via, &ev, &e.Reason, &e.Note, &e.From, &e.To); err != nil {
 			return nil, err
 		}
 		if t := parse(at); t != nil {
@@ -185,6 +196,7 @@ type Filter struct {
 	Status  string
 	Card    string
 	Agent   string
+	Owner   string // GRS-91: the label that owns it
 	Runbook string // the run's name or registered ref
 }
 
@@ -200,10 +212,10 @@ func List(p *project.Project, f Filter) ([]api.Run, error) {
 		status = "running"
 	}
 	rows, err := db.Query(`SELECT id, workspace_id, runbook, status, current_step, card_key, agent_label, started_by, version, started_at, finished_at, updated_at,
-		runbook_ref, runbook_version, internal, started_via, cancel_reason, canceled_by, canceled_label, canceled_via, canceled_at
+		runbook_ref, runbook_version, internal, started_via, cancel_reason, canceled_by, canceled_label, canceled_via, canceled_at, owner_label
 		FROM record_runs WHERE (? = '' OR status = ?) AND (? = '' OR lower(card_key) = lower(?)) AND (? = '' OR agent_label = ?)
-		  AND (? = '' OR lower(runbook) = lower(?) OR lower(runbook_ref) = lower(?))
-		ORDER BY started_at DESC, id DESC`, status, status, f.Card, f.Card, f.Agent, f.Agent, f.Runbook, f.Runbook, f.Runbook)
+		  AND (? = '' OR lower(runbook) = lower(?) OR lower(runbook_ref) = lower(?)) AND (? = '' OR owner_label = ?)
+		ORDER BY started_at DESC, id DESC`, status, status, f.Card, f.Card, f.Agent, f.Agent, f.Runbook, f.Runbook, f.Runbook, f.Owner, f.Owner)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +225,7 @@ func List(p *project.Project, f Filter) ([]api.Run, error) {
 		var started, finished, updated, canceled string
 		if err := rows.Scan(&r.ID, &r.WorkspaceID, &r.Runbook, &r.Status, &r.CurrentStep, &r.CardKey, &r.AgentLabel, &r.StartedBy, &r.Version,
 			&started, &finished, &updated, &r.RunbookRef, &r.RunbookVer, &r.Internal, &r.StartedVia,
-			&r.CancelReason, &r.CanceledBy, &r.CanceledLabel, &r.CanceledVia, &canceled); err != nil {
+			&r.CancelReason, &r.CanceledBy, &r.CanceledLabel, &r.CanceledVia, &canceled, &r.OwnerLabel); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -239,7 +251,7 @@ func List(p *project.Project, f Filter) ([]api.Run, error) {
 }
 
 func steps(db *sql.DB, r *api.Run) error {
-	rows, err := db.Query(`SELECT step_id, position, kind, title, status, evidence, note, skip_reason, done_by, done_label, started_at, finished_at, done_via
+	rows, err := db.Query(`SELECT step_id, position, kind, title, status, evidence, note, skip_reason, done_by, done_label, started_at, finished_at, done_via, executor
 		FROM record_run_steps WHERE run_id = ? ORDER BY position`, r.ID)
 	if err != nil {
 		return err
@@ -249,7 +261,7 @@ func steps(db *sql.DB, r *api.Run) error {
 	for rows.Next() {
 		s := api.RunStep{RunID: r.ID}
 		var ev, started, finished string
-		if err := rows.Scan(&s.StepID, &s.Position, &s.Kind, &s.Title, &s.Status, &ev, &s.Note, &s.SkipReason, &s.DoneBy, &s.DoneLabel, &started, &finished, &s.DoneVia); err != nil {
+		if err := rows.Scan(&s.StepID, &s.Position, &s.Kind, &s.Title, &s.Status, &ev, &s.Note, &s.SkipReason, &s.DoneBy, &s.DoneLabel, &started, &finished, &s.DoneVia, &s.Executor); err != nil {
 			return err
 		}
 		s.Evidence = []api.Evidence{}

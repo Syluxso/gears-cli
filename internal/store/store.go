@@ -157,6 +157,13 @@ var columns = []struct{ table, column, def string }{
 	{"record_runs", "canceled_label", "TEXT NOT NULL DEFAULT ''"},
 	{"record_runs", "canceled_via", "TEXT NOT NULL DEFAULT ''"},
 	{"record_runs", "canceled_at", "TEXT NOT NULL DEFAULT ''"},
+	// GRS-91: a record run's owner label, and a claim event's from / to.
+	// GRS-92: a cached step's executor (system | agent) and kind decide
+	// whether the Stop hook could keep an agent on it.
+	{"record_runs", "owner_label", "TEXT NOT NULL DEFAULT ''"},
+	{"record_run_events", "from_label", "TEXT NOT NULL DEFAULT ''"},
+	{"record_run_events", "to_label", "TEXT NOT NULL DEFAULT ''"},
+	{"record_run_steps", "executor", "TEXT NOT NULL DEFAULT ''"},
 }
 
 // backfill runs once, right after its column is added: rows from before the
@@ -170,6 +177,8 @@ var backfill = map[string][]string{
 	"cards.state_changed_at": {`UPDATE cards SET state_changed_at = updated_at WHERE state_changed_at = ''`},
 	// An artifact with a file id had its body uploaded: its row hash.
 	"artifacts.content_hash": {`UPDATE artifacts SET content_hash = body_hash WHERE remote_file_id <> ''`},
+	// A run cached before owners is owned by its starter.
+	"record_runs.owner_label": {`UPDATE record_runs SET owner_label = agent_label WHERE owner_label = ''`},
 }
 
 // after the columns: indexes on added columns.

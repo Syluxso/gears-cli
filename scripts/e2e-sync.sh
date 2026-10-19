@@ -434,6 +434,35 @@ curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application
 curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"decision":"approve"}' "$GEARS_API/api/v1/runs/$LR/steps/ok/decision" >/dev/null || fail "approve"
 ( cd "$WS" && "$G" runbook next "$LR" --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['finished'] and o['status']=='completed', o; print('ok: approved, run finished')"
 
+echo "== GRS-91: a run's owner; claim moves it"
+CR=$( cd "$WS" && "$G" -a e2e-other runbook start claimme --step w --step v --json | python -c "import json,sys; r=json.load(sys.stdin)['run']; assert r['ownerLabel']=='e2e-other', r; print(r['id'])" )
+( cd "$WS" && "$G" runbook runs --owner me --status running --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert '$CR' not in [r['id'] for r in o['runs']], o; print('ok: not mine before the claim')"
+( cd "$WS" && "$G" runbook claim "$CR" --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['claimed'] and o['from']=='e2e-other' and o['to']=='claude-code+local' and o['run']['ownerLabel']=='claude-code+local', o; print('ok: claimed')"
+( cd "$WS" && "$G" runbook claim "$CR" --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert not o['claimed'], o; print('ok: claiming my own run changes nothing')"
+( cd "$WS" && "$G" runbook runs --owner me --status running --json ) | python -c "import json,sys; o=json.load(sys.stdin); r=[x for x in o['runs'] if x['id']=='$CR']; assert len(r)==1 and r[0]['owner']=='claude-code+local' and r[0]['agent']=='e2e-other', o; print('ok: owner=me after the claim')"
+( cd "$WS" && "$G" -a e2e-other runbook runs --owner me --status running --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert '$CR' not in [r['id'] for r in o['runs']], o; print('ok: the starter no longer owns it')"
+( cd "$WS" && "$G" runbook history "$CR" --json ) | python -c "import json,sys; o=json.load(sys.stdin); c=[e for e in o['events'] if e['type']=='run.claimed']; assert len(c)==1 and c[0]['from']=='e2e-other' and c[0]['to']=='claude-code+local', o; print('ok: run.claimed on the timeline')"
+( cd "$C" && "$G" sync >/dev/null && "$G" runbook show "$CR" --json ) | python -c "import json,sys; r=json.load(sys.stdin)['run']; assert r['ownerLabel']=='claude-code+local', r; print('ok: clone pulled the owner')"
+
+echo "== GRS-92: gears runbook next --hook (the Stop hook)"
+hook() { printf '%s' "$1" | "$G" "${@:2}" runbook next --hook 2>"$WORK/hook.err"; [ ! -s "$WORK/hook.err" ] || { cat "$WORK/hook.err"; fail "hook wrote to stderr"; }; }
+HIN="{\"session_id\":\"e2e-sess\",\"cwd\":\"$(cygpath -m "$WS" 2>/dev/null || echo "$WS")\",\"hook_event_name\":\"Stop\",\"stop_hook_active\":false}"
+HACT="${HIN/false/true}"
+( cd "$WORK" && hook "$HIN" ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['decision']=='block' and '${CR:0:12}' in o['reason'] and 'runbook_step_complete' in o['reason'], o; print('ok: hook blocks on the owned run waiting on the agent')"
+out=$( cd "$WORK" && hook "$HACT" ); [ -z "$out" ] || fail "hook blocked again without progress: $out"
+echo "ok: stop_hook_active and no progress lets the stop happen"
+out=$( cd "$WORK" && hook "$HIN" -a e2e-other ); [ -z "$out" ] || fail "hook blocked a label that does not own the run: $out"
+echo "ok: another label is not kept going"
+out=$( cd "$WS" && hook "" ); [ -n "$out" ] || fail "hook with empty stdin in the workspace did not block"
+echo "ok: empty stdin, cwd from the process"
+out=$( cd "$WORK" && GEARS_API=http://127.0.0.1:1 hook "$HIN" ); [ -z "$out" ] || fail "hook blocked with gears-api unreachable: $out"
+echo "ok: gears-api unreachable lets the stop happen"
+( cd "$WS" && "$G" runbook complete --run "$CR" commit:abc1234 >/dev/null )
+( cd "$WORK" && hook "$HACT" ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['decision']=='block' and 'step v' in o['reason'], o; print('ok: progress since the last block: block on the next step')"
+( cd "$WS" && "$G" runbook complete --run "$CR" commit:abc1234 >/dev/null )
+out=$( cd "$WORK" && hook "$HIN" ); [ -z "$out" ] || fail "hook blocked with the run finished: $out"
+echo "ok: run finished, the stop happens"
+
 echo "== GRS-80: soft delete the workspace; every cache refuses; restore brings it all back"
 WS_SLUG=$(grep '^slug:' "$WS/.gears/project.yaml" | awk '{print $2}' | tr -d '\r')
 if ( cd "$WS" && "$G" workspace delete --confirm wrong >"$WORK/del.out" 2>&1 ); then fail "delete with a wrong confirm accepted"; fi
@@ -451,6 +480,9 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" 
 if ( cd "$C" && "$G" sync >"$WORK/del.out" 2>&1 ); then fail "clone sync of a deleted workspace succeeded"; fi
 grep -q "was deleted on gears-api" "$WORK/del.out" || { cat "$WORK/del.out"; fail "clone sync does not say deleted"; }
 if ( cd "$C" && "$G" desk list >"$WORK/del.out" 2>&1 ); then fail "clone desk list of a deleted workspace answered"; fi
+out=$( cd "$C" && printf '' | "$G" runbook next --hook 2>&1 ) || fail "hook exited non-zero in a deleted workspace"
+[ -z "$out" ] || fail "hook printed in a deleted workspace: $out"
+echo "ok: hook is silent in a deleted workspace"
 python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); v=c.execute(\"SELECT value FROM sync_state WHERE key='workspace_deleted'\").fetchone(); n=c.execute('SELECT count(*) FROM session_entries').fetchone()[0]; assert v and n>0, (v,n); print('ok: clone marked deleted, kept', n, 'session entries')" "$C/.gears/.gearbox/local.db"
 # Restore from the clone; the root hears it on its next sync.
 ( cd "$C" && "$G" workspace restore --json ) | python -c "import json,sys; o=json.load(sys.stdin); assert o['workspace']['id']=='$WS_ID' and o['here'], o; print('ok: restored from the clone')"

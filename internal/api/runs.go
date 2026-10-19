@@ -20,22 +20,25 @@ type Evidence struct {
 
 // Run is a run as gears-api records it.
 type Run struct {
-	ID          string     `json:"id"`
-	WorkspaceID string     `json:"workspaceId"`
-	Runbook     string     `json:"runbook"`
-	RunbookRef  string     `json:"runbookRef,omitempty"`
-	RunbookVer  int        `json:"runbookVersion,omitempty"`
-	Internal    bool       `json:"internal,omitempty"`
-	StartedVia  string     `json:"startedVia,omitempty"`
-	Status      string     `json:"status"`
-	CurrentStep string     `json:"currentStep"`
-	CardKey     string     `json:"cardKey"`
-	AgentLabel  string     `json:"agentLabel"`
-	StartedBy   string     `json:"startedBy"`
-	Version     int        `json:"version"`
-	StartedAt   time.Time  `json:"startedAt"`
-	FinishedAt  *time.Time `json:"finishedAt,omitempty"`
-	UpdatedAt   time.Time  `json:"updatedAt"`
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspaceId"`
+	Runbook     string `json:"runbook"`
+	RunbookRef  string `json:"runbookRef,omitempty"`
+	RunbookVer  int    `json:"runbookVersion,omitempty"`
+	Internal    bool   `json:"internal,omitempty"`
+	StartedVia  string `json:"startedVia,omitempty"`
+	Status      string `json:"status"`
+	CurrentStep string `json:"currentStep"`
+	CardKey     string `json:"cardKey"`
+	AgentLabel  string `json:"agentLabel"`
+	// OwnerLabel is the label kept working on the run (GRS-91): the
+	// starter until a claim moves it.
+	OwnerLabel string     `json:"ownerLabel,omitempty"`
+	StartedBy  string     `json:"startedBy"`
+	Version    int        `json:"version"`
+	StartedAt  time.Time  `json:"startedAt"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+	UpdatedAt  time.Time  `json:"updatedAt"`
 	// GRS-69: set on a canceled run (stopped on purpose).
 	CancelReason  string     `json:"cancelReason,omitempty"`
 	CanceledBy    string     `json:"canceledBy,omitempty"`
@@ -165,6 +168,9 @@ type RunEvent struct {
 	// GRS-84: a step event's executor; doneBySystem when the system did it.
 	Executor     string `json:"executor,omitempty"`
 	DoneBySystem bool   `json:"doneBySystem,omitempty"`
+	// GRS-91: a run.claimed event's owner before and after.
+	From string `json:"from,omitempty"`
+	To   string `json:"to,omitempty"`
 }
 
 // RunHistory is GET /runs/:id/events.
@@ -228,17 +234,17 @@ func (c *Client) ListRuns(ctx context.Context, ws, status, card string) ([]Run, 
 }
 
 // RunsFilter narrows ListRunsPage (GRS-71). Agent is the label that
-// started the run.
+// started the run, Owner the label that owns it (GRS-91).
 type RunsFilter struct {
-	Status, Card, Runbook, Agent, Cursor string
-	Limit                                int
+	Status, Card, Runbook, Agent, Owner, Cursor string
+	Limit                                       int
 }
 
 // ListRunsPage lists the workspace's runs from the gears record (it needs
 // no orchestrator) and the next page's cursor (X-Next-Cursor).
 func (c *Client) ListRunsPage(ctx context.Context, ws string, f RunsFilter) ([]Run, string, error) {
 	q := url.Values{}
-	for k, v := range map[string]string{"status": f.Status, "card": f.Card, "runbook": f.Runbook, "agent": f.Agent, "cursor": f.Cursor} {
+	for k, v := range map[string]string{"status": f.Status, "card": f.Card, "runbook": f.Runbook, "agent": f.Agent, "owner": f.Owner, "cursor": f.Cursor} {
 		if v != "" {
 			q.Set(k, v)
 		}
@@ -287,6 +293,8 @@ type RunNext struct {
 	Runbook      string    `json:"runbook,omitempty"`
 	Status       string    `json:"status,omitempty"`
 	Card         string    `json:"card,omitempty"`
+	Owner        string    `json:"owner,omitempty"`   // GRS-91
+	Version      int       `json:"version,omitempty"` // the run's version
 	Step         *NextStep `json:"step,omitempty"`
 	Instructions string    `json:"instructions"`
 	WaitingOn    string    `json:"waitingOn,omitempty"` // agent | system | human
@@ -302,5 +310,26 @@ type RunNext struct {
 func (c *Client) NextRun(ctx context.Context, runID string) (*RunNext, error) {
 	var out RunNext
 	_, err := c.Do(ctx, "GET", "/api/v1/runs/"+url.PathEscape(runID)+"/next", nil, &out)
+	return &out, err
+}
+
+// ClaimIn names the label that takes a run over (GRS-91).
+type ClaimIn struct {
+	Agent string `json:"agent,omitempty"`
+}
+
+// ClaimOut is POST /runs/:id/claim: claimed false when the label already
+// owned it.
+type ClaimOut struct {
+	Claimed bool   `json:"claimed"`
+	From    string `json:"from"`
+	To      string `json:"to"`
+	Run     *Run   `json:"run"`
+}
+
+// ClaimRun makes the label the run's owner; recorded as run.claimed.
+func (c *Client) ClaimRun(ctx context.Context, runID string, in ClaimIn) (*ClaimOut, error) {
+	var out ClaimOut
+	_, err := c.Do(ctx, "POST", "/api/v1/runs/"+url.PathEscape(runID)+"/claim", in, &out)
 	return &out, err
 }

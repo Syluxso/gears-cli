@@ -36,6 +36,7 @@ func setInput(t *testing.T, tty bool, input string) {
 
 func resetInitFlags() {
 	initName, initSlug, initPrefix, globalAgent = "", "", "", ""
+	initHook, hooksDir = false, ""
 }
 
 func savedName(t *testing.T, ws string) string {
