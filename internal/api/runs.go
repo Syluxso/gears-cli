@@ -30,6 +30,7 @@ type Run struct {
 	Status      string `json:"status"`
 	CurrentStep string `json:"currentStep"`
 	CardKey     string `json:"cardKey"`
+	Tag         string `json:"tag,omitempty"` // GRS-105: the board tag the run is for
 	AgentLabel  string `json:"agentLabel"`
 	// OwnerLabel is the label kept working on the run (GRS-91): the
 	// starter until a claim moves it.

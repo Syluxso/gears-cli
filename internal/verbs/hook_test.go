@@ -152,3 +152,20 @@ func TestStopHookNotLoggedIn(t *testing.T) {
 	p := fakeapi.Workspace(t)
 	mustAllow(t, Ctx{Project: p, Agent: "claude-local"}, StopHookIn{SessionID: "x"}, "gears login")
 }
+
+// GRS-100: at a card.wait the hook asks gears-api: while audit tickets
+// are open the agent is kept working; once none are, it may stop.
+func TestStopHookCardWait(t *testing.T) {
+	f := fakeapi.New("WS")
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	fakeapi.Login(t, srv.URL)
+	me := Ctx{Project: fakeapi.Workspace(t), Agent: "claude-local"}
+	hookStart(t, me, "audit", api.StepDef{ID: "wait", Kind: "card.wait", Title: "Wait for the audit tickets", Params: map[string]any{"open": true}})
+	if got := mustBlock(t, me, StopHookIn{SessionID: "s-wait"}); !strings.Contains(got.Reason, "work the open cards") {
+		t.Fatalf("reason: %s", got.Reason)
+	}
+	me2 := Ctx{Project: fakeapi.Workspace(t), Agent: "grok-cli"}
+	hookStart(t, me2, "audit", api.StepDef{ID: "wait", Kind: "card.wait", Title: "Wait", Params: map[string]any{"open": false}})
+	mustAllow(t, me2, StopHookIn{SessionID: "s-done"}, "waits on the agent")
+}
