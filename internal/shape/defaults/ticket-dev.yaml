@@ -1,0 +1,10 @@
+# What a ticket-development run did, written to mirror its pull request
+# (GRS-104): a bullet list of the changes, a mermaid diagram of the data
+# flow or model where it helps, and open notes. The card it is for goes in
+# the front matter.
+prefix: ticket-dev
+title: Ticket development
+frontMatter: [title, card]
+sections:
+  - What Was Done
+minBody: 40
