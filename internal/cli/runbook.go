@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"strconv"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -525,6 +526,9 @@ It always exits 0 and is silent on stderr unless GEARS_HOOK_DEBUG=1.`,
 		if len(out.Next) > 0 {
 			fmt.Println("  then: " + strings.Join(out.Next, " / "))
 		}
+		for _, line := range foundLines(out.Outputs) {
+			fmt.Println("  found: " + line)
+		}
 		return nil
 	},
 }
@@ -879,4 +883,39 @@ func init() {
 	runbookCmd.AddCommand(runbookNewCmd, runbookCopyCmd, runbookUpdateCmd, runbookDeleteCmd, runbookListCmd, runbookShowCmd, runbookStartCmd,
 		runbookStepCmd, runbookCompleteCmd, runbookSkipCmd, runbookStopCmd, runbookClaimCmd, runbookNextCmd, runbookHistoryCmd, runbookStatusCmd, runbookRunsCmd)
 	root.AddCommand(runbookCmd)
+}
+
+// foundLines summarises card.query outputs (GRS-99): "<step>: N cards: KEY, KEY".
+func foundLines(outputs map[string]any) []string {
+	ids := make([]string, 0, len(outputs))
+	for id := range outputs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var lines []string
+	for _, id := range ids {
+		o, _ := outputs[id].(map[string]any)
+		cards, _ := o["cards"].([]any)
+		if o == nil || o["cards"] == nil {
+			continue
+		}
+		var keys []string
+		for _, c := range cards {
+			if m, ok := c.(map[string]any); ok {
+				if k, _ := m["key"].(string); k != "" {
+					keys = append(keys, k)
+				}
+			}
+		}
+		n := len(keys)
+		if f, ok := o["count"].(float64); ok {
+			n = int(f)
+		}
+		line := fmt.Sprintf("%s: %d card%s", id, n, map[bool]string{true: "", false: "s"}[n == 1])
+		if len(keys) > 0 {
+			line += ": " + strings.Join(keys, ", ")
+		}
+		lines = append(lines, line)
+	}
+	return lines
 }

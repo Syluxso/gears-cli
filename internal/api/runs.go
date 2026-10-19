@@ -76,7 +76,9 @@ type RunStep struct {
 	Executor     string         `json:"executor,omitempty"`
 	DoneBySystem bool           `json:"doneBySystem,omitempty"`
 	SystemError  string         `json:"systemError,omitempty"`
-	Decision     *RunDecision   `json:"decision,omitempty"`
+	// Output (GRS-99): what a card.query step found.
+	Output   map[string]any `json:"output,omitempty"`
+	Decision *RunDecision   `json:"decision,omitempty"`
 }
 
 // RunDecision is a person's decision on an approval or gate step (GRS-88).
@@ -302,8 +304,10 @@ type RunNext struct {
 	Total        int       `json:"total"`
 	Progress     string    `json:"progress,omitempty"`
 	Next         []string  `json:"next,omitempty"`
-	Finished     bool      `json:"finished,omitempty"`
-	Message      string    `json:"message,omitempty"`
+	// Outputs (GRS-99): the done steps' outputs by step id (card.query finds).
+	Outputs  map[string]any `json:"outputs,omitempty"`
+	Finished bool           `json:"finished,omitempty"`
+	Message  string         `json:"message,omitempty"`
 }
 
 // NextRun reads what to do now on a run (gears record; no orchestrator).
