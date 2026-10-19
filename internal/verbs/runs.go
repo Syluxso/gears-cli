@@ -551,7 +551,7 @@ func RunbookNext(c Ctx, in RunbookNextIn) (*RunbookNextOut, error) {
 		}
 		ctx, cancel := runCtx()
 		defer cancel()
-		n, err := cl.NextRun(ctx, id)
+		n, err := cl.NextRun(ctx, id, agent)
 		if err == nil {
 			return &RunbookNextOut{RunNext: *n}, nil
 		}
