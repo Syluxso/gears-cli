@@ -304,7 +304,7 @@ var runbookStartCmd = &cobra.Command{
 	Use:   "start <runbook>",
 	Short: "Start a run on gears-api (a registered runbook, or --step inline steps)",
 	Long: `Starts a run through gears-api, which hands it to byz-orchestrator (GRS-51).
-<runbook> is a registered runbook's name, e.g. gears-migrate. With --step
+<runbook> is a registered runbook's name, e.g. ticket-development. With --step
 (repeatable, id or id:kind) the steps are sent inline under that name; kinds
 come from the orchestrator's ability catalog. --card ties the run to a card.`,
 	Args: cobra.ExactArgs(1),

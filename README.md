@@ -143,7 +143,7 @@ the server to it):
 | `runbook_adopt {ref, as?}` | `gears runbook adopt <ref> [--as]` | copy an official runbook into the workspace |
 | `runbook_edit {runbook, ...}` | `gears runbook edit <slug> [--title] [--description] [--steps-file]` | change an editable copy (a frozen one is refused) |
 | `runbook_unadopt {runbook}` | `gears runbook unadopt <slug>` | remove an adopted copy, frozen or editable (GRS-73) |
-| `runbook_start {runbook, cardKey?, steps?, idempotencyKey?}` | `gears runbook start <name> [--card] [--step id[:kind]] [--key]` | start a run: an official ref directly (`ticket-development`, `sprint-development`, `audit-branch`; no adoption), an adopted slug, or inline steps |
+| `runbook_start {runbook, cardKey?, steps?, idempotencyKey?}` | `gears runbook start <name> [--card] [--step id[:kind]] [--key]` | start a run: an official ref directly (today `ticket-development`; no adoption), an adopted slug, or inline steps |
 | `runbook_step_complete {run?, step?, evidence?, note?}` | `gears runbook complete [kind:ref ...] [--run] [--step] [--note]` | complete a step with evidence (`session:<id\|short>`, `artifact:<file\|id>`, `desk:<id>[:state]`, `card:<KEY>[:<State>]`, `commit:<sha>`); gears-api checks each exists first, so sync first |
 | `runbook_next {run?}` | `gears runbook next [run]` | what to do now: the current step (kind, params, executor `system`/`agent`, ability), instructions, `waitingOn` agent/system/human, done/total, the next titles; several running runs are listed to pick from (GRS-87) |
 | `runbook_step_skip {reason, run?, step?, note?}` | `gears runbook skip --reason` | skip a step with a reason |
@@ -198,9 +198,10 @@ and `<!-- gears:end -->`; an older block is updated in place).
      then ask again.
 3. **Repeat** until `runbook_next` says `finished`.
 
-**Two human gates.** Designing the ticket is outside runs: a person writes
-and grooms the card before any run starts. Approving the audit's proposals
-is inside the run: `audit-branch`'s `approve` step waits for a person.
+**Human gates.** Designing the ticket is outside runs: a person writes and
+grooms the card before any run starts. Inside a run, `approval` and `gate`
+steps wait for a person. The audit is being built into `ticket-development`
+itself (GRS-100, GRS-102, GRS-103); there is no separate audit runbook.
 
 Example (MCP calls, in order):
 
@@ -220,17 +221,14 @@ runbook_step_complete {"run": "run-0199...", "evidence": [{"kind": "session", "r
 runbook_next  {"run": "run-0199..."}                         -> {"finished": true, "message": "Run run-0199... is completed: nothing more to do on it."}
 ```
 
-An audit run stops at its approval:
+A step that waits for a person (an `approval` or `gate`) answers
+`waitingOn: "human"`; a reject or change request comes back on it:
 
 ```
-runbook_start {"runbook": "audit-branch", "cardKey": "GRS-12"}
-... review, propose (complete each with evidence) ...
 runbook_next  {"run": "run-01aa..."}  -> {"step": {"id": "approve", "kind": "approval"}, "waitingOn": "human", ...}
   (wait; a person approves in the app)
 runbook_next  {"run": "run-01aa..."}  -> {"step": {"id": "approve", "decision": {"decision": "changes", "reason": "drop fix 3"}},
-                                          "instructions": "changes requested: drop fix 3, revise proposals. ..."}
-  (revise, tell the person; wait again)
-runbook_next  {"run": "run-01aa..."}  -> {"step": {"id": "apply", ...}, "waitingOn": "agent"}
+                                          "instructions": "changes requested: drop fix 3, revise. ..."}
 ```
 
 From a shell: `gears runbook next [run]`, `gears runbook complete commit:<sha>`,
