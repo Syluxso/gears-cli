@@ -89,6 +89,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 		var in api.RunStartIn
 		b, _ := json.Marshal(body)
 		_ = json.Unmarshal(b, &in)
+		s.Starts = append(s.Starts, in)
 		steps := in.Steps
 		if len(steps) == 0 {
 			steps = []api.StepDef{{ID: "a"}, {ID: "b"}}

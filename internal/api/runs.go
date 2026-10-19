@@ -104,6 +104,7 @@ type RunStartIn struct {
 	Runbook        string    `json:"runbook"`
 	Steps          []StepDef `json:"steps,omitempty"`
 	CardKey        string    `json:"cardKey,omitempty"`
+	Tag            string    `json:"tag,omitempty"` // GRS-105
 	IdempotencyKey string    `json:"idempotencyKey,omitempty"`
 	Agent          string    `json:"agent,omitempty"`
 }
