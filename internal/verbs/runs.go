@@ -62,6 +62,7 @@ type RunbookStartIn struct {
 	Runbook        string        `json:"runbook" jsonschema:"A registered runbook's name (e.g. ticket-development), or the name of the inline steps."`
 	Steps          []api.StepDef `json:"steps,omitempty" jsonschema:"Inline definition, in order: each {id, kind?, title?, params?}; kinds come from the orchestrator's ability catalog (freeform, do, ask, approval, gate, note, card.move, card.comment, git.branch, git.commit, git.push, git.merge). Omit to start the registered runbook."`
 	Card           string        `json:"cardKey,omitempty" jsonschema:"Card key the run is for, e.g. GRS-55. Must be on the workspace's board."`
+	Tag            string        `json:"tag,omitempty" jsonschema:"The board tag the run is for, e.g. sprint-1 (GRS-105): ticket-development finds the open cards with it and asks the person to confirm them first."`
 	IdempotencyKey string        `json:"idempotencyKey,omitempty" jsonschema:"Same key again returns the run it started."`
 	AgentOpt
 }
@@ -78,7 +79,7 @@ func RunbookStart(c Ctx, in RunbookStartIn) (*api.RunStartOut, error) {
 	}
 	ctx, cancel := runCtx()
 	defer cancel()
-	out, err := cl.StartRun(ctx, ws, api.RunStartIn{Runbook: in.Runbook, Steps: in.Steps, CardKey: in.Card, IdempotencyKey: in.IdempotencyKey, Agent: c.agentOr(in.Agent)})
+	out, err := cl.StartRun(ctx, ws, api.RunStartIn{Runbook: in.Runbook, Steps: in.Steps, CardKey: in.Card, Tag: in.Tag, IdempotencyKey: in.IdempotencyKey, Agent: c.agentOr(in.Agent)})
 	if err != nil {
 		return nil, err
 	}

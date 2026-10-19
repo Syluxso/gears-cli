@@ -143,7 +143,7 @@ the server to it):
 | `runbook_adopt {ref, as?}` | `gears runbook adopt <ref> [--as]` | copy an official runbook into the workspace |
 | `runbook_edit {runbook, ...}` | `gears runbook edit <slug> [--title] [--description] [--steps-file]` | change an editable copy (a frozen one is refused) |
 | `runbook_unadopt {runbook}` | `gears runbook unadopt <slug>` | remove an adopted copy, frozen or editable (GRS-73) |
-| `runbook_start {runbook, cardKey?, steps?, idempotencyKey?}` | `gears runbook start <name> [--card] [--step id[:kind]] [--key]` | start a run: an official ref directly (today `ticket-development`; no adoption), an adopted slug, or inline steps |
+| `runbook_start {runbook, cardKey?, tag?, steps?, idempotencyKey?}` | `gears runbook start <name> [--card] [--tag] [--step id[:kind]] [--key]` | start a run: an official ref directly (today `ticket-development`; no adoption), an adopted slug, or inline steps. `tag` (GRS-105): the run is for that tag's cards; ticket-development finds them and asks the person to confirm first |
 | `runbook_step_complete {run?, step?, evidence?, note?}` | `gears runbook complete [kind:ref ...] [--run] [--step] [--note]` | complete a step with evidence (`session:<id\|short>`, `artifact:<file\|id>`, `desk:<id>[:state]`, `card:<KEY>[:<State>]`, `commit:<sha>`); gears-api checks each exists first, so sync first |
 | `runbook_next {run?}` | `gears runbook next [run]` | what to do now: the current step (kind, params, executor `system`/`agent`, ability), instructions, `waitingOn` agent/system/human, done/total, the next titles; several running runs are listed to pick from (GRS-87) |
 | `runbook_step_skip {reason, run?, step?, note?}` | `gears runbook skip --reason` | skip a step with a reason |

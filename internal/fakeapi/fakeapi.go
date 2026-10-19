@@ -43,8 +43,10 @@ type entry struct {
 
 // Server is the fake. The zero value is not usable; call New.
 type Server struct {
-	mu      sync.Mutex
-	Prefix  string
+	mu     sync.Mutex
+	Prefix string
+	// Starts are the run start bodies, in order (GRS-105 tests read them).
+	Starts  []api.RunStartIn
 	states  []api.BoardState
 	rows    map[string]map[string]json.RawMessage
 	log     []entry

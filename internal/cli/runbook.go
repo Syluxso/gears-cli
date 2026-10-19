@@ -2,8 +2,8 @@ package cli
 
 import (
 	"fmt"
-	"strconv"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -27,6 +27,7 @@ var (
 	rbTo         int
 	rbSteps      []string
 	rbKey        string
+	rbTag        string
 	rbStep       string
 	rbNote       string
 	rbStatus     string
@@ -314,7 +315,7 @@ come from the orchestrator's ability catalog. --card ties the run to a card.`,
 		if err != nil {
 			return err
 		}
-		in := verbs.RunbookStartIn{Runbook: args[0], Card: rbTarget, IdempotencyKey: rbKey}
+		in := verbs.RunbookStartIn{Runbook: args[0], Card: rbTarget, Tag: rbTag, IdempotencyKey: rbKey}
 		for _, st := range rbSteps {
 			id, kind, _ := strings.Cut(st, ":")
 			in.Steps = append(in.Steps, api.StepDef{ID: id, Kind: kind})
@@ -857,6 +858,7 @@ func init() {
 	runbookCopyCmd.Flags().StringVar(&rbFrom, "from", "", "another project's root directory (default: built-in)")
 	runbookCopyCmd.Flags().StringVar(&rbAs, "as", "", "title for the copy")
 	runbookStartCmd.Flags().StringVar(&rbTarget, "card", "", "the card the run is for, e.g. GRS-55")
+	runbookStartCmd.Flags().StringVar(&rbTag, "tag", "", "the board tag the run is for, e.g. sprint-1 (ticket-development finds its cards and asks you to confirm them)")
 	runbookStartCmd.Flags().StringArrayVar(&rbSteps, "step", nil, "inline step id or id:kind (repeatable, in order)")
 	runbookStartCmd.Flags().StringVar(&rbKey, "key", "", "idempotency key: the same key returns the same run")
 	for _, c := range []*cobra.Command{runbookCompleteCmd, runbookSkipCmd} {
