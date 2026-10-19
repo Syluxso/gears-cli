@@ -160,6 +160,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 		}
 		ok(http.StatusOK, run)
 	case reRunNext.MatchString(path): // GRS-87
+		s.NextLabels = append(s.NextLabels, r.Header.Get("X-Gears-Label"))
 		run := s.getRun(reRunNext.FindStringSubmatch(path)[1])
 		if run == nil {
 			problem(w, 404, "gears.not_found", "not found")

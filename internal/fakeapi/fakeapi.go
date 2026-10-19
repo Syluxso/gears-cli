@@ -46,13 +46,15 @@ type Server struct {
 	mu     sync.Mutex
 	Prefix string
 	// Starts are the run start bodies, in order (GRS-105 tests read them).
-	Starts  []api.RunStartIn
-	states  []api.BoardState
-	rows    map[string]map[string]json.RawMessage
-	log     []entry
-	numbers map[string]int
-	used    map[int]bool
-	subs    map[chan string]struct{}
+	Starts []api.RunStartIn
+	// NextLabels are the X-Gears-Label of each runbook next, in order.
+	NextLabels []string
+	states     []api.BoardState
+	rows       map[string]map[string]json.RawMessage
+	log        []entry
+	numbers    map[string]int
+	used       map[int]bool
+	subs       map[chan string]struct{}
 
 	// RunbooksOff answers as a gears-api without BYZ_ORCHESTRATOR_URL:
 	// the official catalog, abilities, start, complete and skip are 501;

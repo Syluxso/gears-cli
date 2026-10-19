@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/url"
+	"strings"
 	"strconv"
 	"time"
 )
@@ -313,9 +314,18 @@ type RunNext struct {
 }
 
 // NextRun reads what to do now on a run (gears record; no orchestrator).
-func (c *Client) NextRun(ctx context.Context, runID string) (*RunNext, error) {
+// NextRun is GET /runs/:id/next as agent (X-Gears-Label): gears-api's answer
+// depends on who asks (GRS-102: the developer waits on a reviewer, anyone
+// else is the reviewer). An empty agent sends the client's own label.
+func (c *Client) NextRun(ctx context.Context, runID, agent string) (*RunNext, error) {
+	cl := c
+	if a := strings.TrimSpace(agent); a != "" && a != c.Label {
+		cp := *c
+		cp.Label = a
+		cl = &cp
+	}
 	var out RunNext
-	_, err := c.Do(ctx, "GET", "/api/v1/runs/"+url.PathEscape(runID)+"/next", nil, &out)
+	_, err := cl.Do(ctx, "GET", "/api/v1/runs/"+url.PathEscape(runID)+"/next", nil, &out)
 	return &out, err
 }
 

@@ -98,7 +98,7 @@ func StopHook(c Ctx, in StopHookIn, timeout time.Duration) (out *StopHookOut, wh
 		if cur := runs.Current(&r); cur != nil && cur.Kind != "card.wait" && (cur.Executor == "system" || cur.Kind == "approval" || cur.Kind == "gate") {
 			continue
 		}
-		n, err := cl.NextRun(ctx, r.ID)
+		n, err := cl.NextRun(ctx, r.ID, agent)
 		if err != nil {
 			return nil, "allow: " + err.Error()
 		}
