@@ -24,7 +24,7 @@ import (
 
 // Prefixes in display order. "shape" files live beside these but are schemas,
 // not artifacts, so they are not listed.
-var Prefixes = []string{"arch", "adr", "story", "idea", "index", "free", "runbook"}
+var Prefixes = []string{"arch", "adr", "story", "idea", "index", "ticket-dev", "free", "runbook"}
 
 // ArchFile is the workspace's one architecture artifact (GRS-41): the master
 // design doc gears status always shows in full. Free-form for now (its shape

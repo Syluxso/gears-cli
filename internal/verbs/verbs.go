@@ -580,7 +580,7 @@ func artifactOut(a artifact.Artifact) Artifact {
 }
 
 type ArtifactNewIn struct {
-	Prefix  string `json:"prefix" jsonschema:"adr (a decision; numbered, never rewritten) | story (a feature in the user's words) | idea | index | free | arch (the workspace's one architecture doc, always arch--primary.md; a second is refused). Runbooks are authored with runbook_new."`
+	Prefix  string `json:"prefix" jsonschema:"adr (a decision; numbered, never rewritten) | story (a feature in the user's words) | idea | index | ticket-dev (ticket-development's PR-mirroring note) | free | arch (the workspace's one architecture doc, always arch--primary.md; a second is refused). Runbooks are authored with runbook_new."`
 	Title   string `json:"title" jsonschema:"Human title. The file slug is derived from it; file names are unique across the workspace."`
 	Project string `json:"project,omitempty" jsonschema:"The project this artifact belongs to: slug, id or path from projects_list. Default: the project the server runs in, else none (workspace-level)."`
 }
