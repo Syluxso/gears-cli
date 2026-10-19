@@ -185,7 +185,10 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) bool {
 				out.Step = &api.NextStep{ID: st.StepID, Kind: st.Kind, Title: st.Title, Params: st.Params, Executor: st.Executor, Position: st.Position,
 					Ability: api.NextAbility{Title: st.Kind, EvidenceKinds: []string{"commit"}, RequiresEvidence: true}}
 				switch {
-				case st.Executor == "system":
+				case st.Kind == "card.wait" && st.Params["open"] == true:
+					// Test knob: gears-api says the agent works the open cards (GRS-100).
+					out.WaitingOn, out.Instructions = "agent", st.Title+": work the open cards; the run moves on by itself."
+				case st.Executor == "system" || st.Kind == "card.wait":
 					out.WaitingOn, out.Instructions = "system", st.Title+": the system does this; wait, then call runbook_next again."
 				case st.Kind == "approval" || st.Kind == "gate":
 					out.WaitingOn, out.Instructions = "human", st.Title+": waiting for a person to approve. Do not complete it."

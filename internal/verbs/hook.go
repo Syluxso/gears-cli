@@ -93,7 +93,9 @@ func StopHook(c Ctx, in StopHookIn, timeout time.Duration) (out *StopHookOut, wh
 	var next *api.RunNext
 	var run api.Run
 	for _, r := range mine {
-		if cur := runs.Current(&r); cur != nil && (cur.Executor == "system" || cur.Kind == "approval" || cur.Kind == "gate") {
+		// A card.wait is the system's, but while audit tickets are open the
+		// agent works them (GRS-100): ask gears-api, which says so.
+		if cur := runs.Current(&r); cur != nil && cur.Kind != "card.wait" && (cur.Executor == "system" || cur.Kind == "approval" || cur.Kind == "gate") {
 			continue
 		}
 		n, err := cl.NextRun(ctx, r.ID)
